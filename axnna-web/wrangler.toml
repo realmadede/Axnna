@@ -1,0 +1,19 @@
+name = "axnna-web"
+compatibility_date = "2024-03-20"
+compatibility_flags = ["nodejs_compat"]
+main = "src/worker.ts"
+
+[site]
+bucket = "./dist"
+
+[build]
+command = "npm run build"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "axnna_db"
+database_id = "local-db-id"
+migrations_dir = "./migrations"
+
+[triggers]
+crons = ["*/5 * * * *"]
