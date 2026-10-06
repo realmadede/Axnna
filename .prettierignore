@@ -1,0 +1,8 @@
+# Ignore artifacts:
+build
+dist
+node_modules
+.wrangler
+
+# Ignore all HTML files:
+*.html
