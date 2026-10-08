@@ -132,8 +132,8 @@ export class FundamentalEngine {
 
     // 4. Macro Regime
     let regime: MacroRegime = 'UNCERTAIN';
-    if (hawkishCount > dovishCount + 1) regime = 'HAWKISH';
-    else if (dovishCount > hawkishCount + 1) regime = 'DOVISH';
+    if (hawkishCount > dovishCount) regime = 'HAWKISH';
+    else if (dovishCount > hawkishCount) regime = 'DOVISH';
     else if (hawkishCount > 0 && dovishCount > 0) regime = 'MIXED';
 
     return {

@@ -52,7 +52,7 @@ describe('FundamentalEngine', () => {
   it('calculates confluence correctly', () => {
     // Strongly bullish EURUSD context
     const now = new Date('2026-10-06T12:00:00Z');
-    const weakUsdEvent = createEvent('3', 'Core CPI m/m', 'USD', 'HIGH', '2026-10-06T10:00:00Z', '0.5', '0.1'); // US data weak -> EURUSD bullish
+    const weakUsdEvent = createEvent('3', 'Core CPI m/m', 'USD', 'HIGH', '2026-10-06T10:00:00Z', '2.0', '0.1'); // US data weak -> EURUSD bullish
     const context = engine.evaluateContext('EURUSD', [weakUsdEvent], now);
 
     expect(context.fundamentalScore).toBeGreaterThan(0);

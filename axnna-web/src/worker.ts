@@ -1,6 +1,7 @@
+import { StrategyEngine } from './core-engine/StrategyEngine';
+import { MarketDataValidator, InternalCandle } from './core-engine/MarketData';
 import { TwelveDataMarketProvider } from "./providers/MarketProvider";
 import { FinnhubFundamentalProvider } from "./providers/FundamentalProvider";
-import { AxnnaV1Engine } from "./engine/AxnnaV1Strategy";
 import { FundamentalEngine } from "./engine/FundamentalEngine";
 
 export interface Env {
@@ -8,6 +9,7 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TWELVEDATA_API_KEY: string;
   FINNHUB_API_KEY: string;
+  BACKTEST_SECRET?: string;
 }
 
 export default {
@@ -64,6 +66,10 @@ export default {
       return Response.json(context, { headers: corsHeaders });
     }
 
+    if (url.pathname === '/api/dev/backtest' && request.method === 'POST') {
+      return await handleBacktestRun(request, env, corsHeaders);
+    }
+
     if (url.pathname.startsWith('/api')) {
       return new Response('Not Found', { status: 404, headers: corsHeaders });
     }
@@ -86,29 +92,54 @@ export default {
     try {
       for (const inst of instruments) {
         for (const tf of timeframes) {
-          const candles = await marketProvider.fetchRecentCandles(inst, tf, 5);
-          for (const c of candles) {
+          try {
+            // Need ~100 candles for reliable structure history
+            const candles = await marketProvider.fetchCandles(inst, tf, 100);
+            const { valid, candles: validCandles, error } = MarketDataValidator.validateAndNormalize(candles);
+            
+            if (!valid) {
+              console.warn(`Data validation failed for ${inst} ${tf}: ${error}`);
+              continue;
+            }
+
+            for (const c of validCandles) {
+              // Convert JS timestamp back to ISO string or keep as ms? DB has DATETIME. 
+              // The old table uses `timestamp DATETIME`, so ISO string.
+              const isoTime = new Date(c.timestamp).toISOString();
+              const id = `${c.symbol}_${c.timeframe}_${c.timestamp}`;
+
+              await env.DB.prepare(`
+                INSERT INTO market_candles (id, instrument, timeframe, timestamp, open, high, low, close, source_provider)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(instrument, timeframe, timestamp) DO UPDATE SET
+                  open = excluded.open,
+                  high = excluded.high,
+                  low = excluded.low,
+                  close = excluded.close,
+                  updated_at = CURRENT_TIMESTAMP
+              `).bind(id, inst, c.timeframe, isoTime, c.open, c.high, c.low, c.close, marketProvider.getProviderName()).run();
+            }
+            
             await env.DB.prepare(`
-              INSERT INTO market_candles (id, instrument, timeframe, timestamp, open, high, low, close, source_provider)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(instrument, timeframe, timestamp) DO UPDATE SET
-                open = excluded.open,
-                high = excluded.high,
-                low = excluded.low,
-                close = excluded.close,
+              INSERT INTO market_data_state (instrument, timeframe, provider, last_completed_candle, last_successful_fetch, status)
+              VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 'HEALTHY')
+              ON CONFLICT(instrument, timeframe) DO UPDATE SET
+                last_completed_candle = excluded.last_completed_candle,
+                last_successful_fetch = CURRENT_TIMESTAMP,
+                status = 'HEALTHY',
+                error_count = 0
+            `).bind(inst, tf, marketProvider.name, new Date(validCandles[validCandles.length - 1].timestamp).toISOString()).run();
+          } catch (e: any) {
+            console.error(`Failed to fetch/store ${inst} ${tf}: ${e.message}`);
+             await env.DB.prepare(`
+              INSERT INTO market_data_state (instrument, timeframe, provider, status, error_count)
+              VALUES (?, ?, ?, 'FAILED', 1)
+              ON CONFLICT(instrument, timeframe) DO UPDATE SET
+                status = 'FAILED',
+                error_count = error_count + 1,
                 updated_at = CURRENT_TIMESTAMP
-            `).bind(c.id, c.instrument, c.timeframe, c.timestamp, c.open, c.high, c.low, c.close, c.source_provider).run();
+            `).bind(inst, tf, marketProvider.name).run();
           }
-          
-          await env.DB.prepare(`
-            INSERT INTO market_data_state (instrument, timeframe, provider, last_completed_candle, last_successful_fetch, status)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 'HEALTHY')
-            ON CONFLICT(instrument, timeframe) DO UPDATE SET
-              last_completed_candle = excluded.last_completed_candle,
-              last_successful_fetch = CURRENT_TIMESTAMP,
-              status = 'HEALTHY',
-              error_count = 0
-          `).bind(inst, tf, marketProvider.name, candles[0]?.timestamp || null).run();
         }
 
         // Run Strategy Engine for this instrument
@@ -140,62 +171,111 @@ export default {
 
   async runStrategyEngine(env: Env, instrument: string) {
     const stratId = 'AXNNA_V1_LIQUIDITY_FVG';
-    const stratVer = '4';
+    const stratVer = 'technical-v1'; // Matched with new core engine strategy version
 
-    // 1. Load state
-    const stateRow = await env.DB.prepare(
-      `SELECT state_payload FROM strategy_state WHERE instrument = ? AND strategy_id = ? AND strategy_version = ?`
-    ).bind(instrument, stratId, stratVer).first();
-
-    let initialState = undefined;
-    if (stateRow && typeof stateRow.state_payload === 'string') {
-      initialState = JSON.parse(stateRow.state_payload);
-    }
-
-    // 2. Initialize engine
-    const engine = new AxnnaV1Engine({
-      swingN: 10,
-      atrN: 14,
-      maxSweepDuration: 3,
-      maxDisplacementDelay: 3,
-      dispSizeMultiplier: 1.5,
-      dispBodyRatio: 0.5,
-      dispCloseLocation: 0.5,
+    const engine = new StrategyEngine({
+      htfTimeframe: '1H',
+      ltfTimeframe: '5M',
+      swingLengthHTF: 3,
+      swingLengthLTF: 2,
+      atrLength: 14,
+      displacementSizeMultiplier: 1.5,
+      displacementBodyRatio: 0.5,
+      displacementCloseLocation: 0.5,
       fvgMinAtrRatio: 0.5,
-      minimumRR: 2.0
-    }, initialState);
+      alertScoreThreshold: 65
+    });
 
-    // 3. Fetch canonical candles to process
+    // Fetch canonical candles to process (Last 100 for proper ATR and structure)
     const { results: c5Raw } = await env.DB.prepare(
-      `SELECT * FROM market_candles WHERE instrument = ? AND timeframe = '5M' ORDER BY timestamp ASC`
+      `SELECT * FROM market_candles WHERE instrument = ? AND timeframe = '5M' ORDER BY timestamp DESC LIMIT 100`
     ).bind(instrument).all();
 
     const { results: c1Raw } = await env.DB.prepare(
-      `SELECT * FROM market_candles WHERE instrument = ? AND timeframe = '1H' ORDER BY timestamp ASC`
+      `SELECT * FROM market_candles WHERE instrument = ? AND timeframe = '1H' ORDER BY timestamp DESC LIMIT 100`
     ).bind(instrument).all();
 
-    // 4. Run Process
-    engine.processCandles(c5Raw as any, c1Raw as any);
+    if (!c5Raw || !c1Raw || c5Raw.length === 0 || c1Raw.length === 0) return;
 
-    // 5. Persist State
-    const payload = JSON.stringify(engine.state);
-    await env.DB.prepare(`
-      INSERT INTO strategy_state (instrument, strategy_id, strategy_version, state_payload)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(instrument, strategy_id, strategy_version) DO UPDATE SET
-        state_payload = excluded.state_payload,
-        updated_at = CURRENT_TIMESTAMP
-    `).bind(instrument, stratId, stratVer, payload).run();
+    // Sort ASC for chronological processing
+    const c5Chronological = c5Raw.reverse().map((c: any) => ({
+      symbol: c.instrument,
+      timeframe: c.timeframe,
+      timestamp: new Date(c.timestamp).getTime(),
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      isCompleted: true // They are completed by definition in our persistence
+    })) as InternalCandle[];
 
-    // 6. Persist Signals
-    for (const sig of engine.generatedSignals) {
-      await env.DB.prepare(`
-        INSERT INTO signals (signal_id, strategy_id, strategy_version, instrument, direction, generated_at, anchor_timeframe, execution_timeframe, entry, structural_stop, structural_target, structural_rr, status)
-        VALUES (?, ?, ?, ?, ?, ?, '1H', '5M', ?, ?, ?, ?, ?)
-        ON CONFLICT(signal_id) DO NOTHING
-      `).bind(sig.signal_id, stratId, stratVer, instrument, sig.direction, sig.generated_at, sig.entry, sig.stop, sig.target, sig.rr, sig.status).run();
+    const c1Chronological = c1Raw.reverse().map((c: any) => ({
+      symbol: c.instrument,
+      timeframe: c.timeframe,
+      timestamp: new Date(c.timestamp).getTime(),
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      isCompleted: true
+    })) as InternalCandle[];
+
+    // Process
+    const results = engine.processCandles(c1Chronological, c5Chronological);
+    
+    // Also include the currently active pending setup if any, so we can track rejections
+    const active = engine.getActiveCandidate();
+    if (active && active.status === 'REJECTED') {
+       results.push(active as any);
+    }
+
+    // Persist Results
+    for (const sig of results) {
+      // Safely serialize evidence payload
+      const payload = JSON.stringify({
+        htfBias: sig.htfBias,
+        liquidity: sig.liquidityReference,
+        sweep: sig.sweep,
+        displacement: sig.displacement,
+        fvg: sig.fvg,
+        retracement: sig.retracement
+      });
+
+      // Avoid SQL syntax errors if entry/stop/target are undefined (use null)
+      const entry = sig.entryPrice !== undefined ? sig.entryPrice : null;
+      const stop = sig.stopLossPrice !== undefined ? sig.stopLossPrice : null;
+      const target = sig.structuralTargetPrice !== undefined ? sig.structuralTargetPrice : null;
       
-      console.log(`SIGNAL_CREATED: ${instrument} ${sig.direction} (Setup: ${sig.signal_id})`);
+      let rr = null;
+      if (entry && stop && target && Math.abs(entry - stop) > 0) {
+        rr = Math.abs(target - entry) / Math.abs(entry - stop);
+      }
+
+      await env.DB.prepare(`
+        INSERT INTO signals (
+          signal_id, strategy_id, strategy_version, instrument, direction, 
+          generated_at, anchor_timeframe, execution_timeframe, 
+          entry, structural_stop, structural_target, structural_rr, 
+          status, technical_score, rejection_reason, evidence_payload
+        )
+        VALUES (?, ?, ?, ?, ?, ?, '1H', '5M', ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(signal_id) DO UPDATE SET
+          -- Only update status if it's currently QUALIFIED or ALERT_ELIGIBLE. Don't downgrade from ALERTED or ACTIVE_TRADE.
+          status = CASE 
+                     WHEN signals.status IN ('QUALIFIED', 'ALERT_ELIGIBLE', 'REJECTED') THEN excluded.status
+                     ELSE signals.status 
+                   END,
+          technical_score = excluded.technical_score,
+          rejection_reason = excluded.rejection_reason,
+          evidence_payload = excluded.evidence_payload
+      `).bind(
+        sig.setupId, stratId, stratVer, instrument, sig.direction, 
+        new Date(sig.detectionTimestamp).toISOString(), 
+        entry, stop, target, rr, 
+        sig.status, sig.technicalScore || 0, sig.invalidationReason || null, payload
+      ).run();
+      
+      console.log(`CANDIDATE_PROCESSED: ${instrument} ${sig.direction} (Setup: ${sig.setupId}) - Status: ${sig.status}`);
     }
   }
 };
@@ -298,4 +378,68 @@ async function processTelegramConnection(env: Env, token: string, from: any, cha
     INSERT INTO audit_events (event_id, event_type, axnna_user_id, actor_source)
     VALUES (?, 'TELEGRAM_CONNECTION_COMPLETED', ?, 'TELEGRAM_WEBHOOK')
   `).bind(crypto.randomUUID(), axnnaUserId).run();
+}
+
+import { BacktestEngine, BacktestConfig } from './core-engine/BacktestEngine';
+
+async function handleBacktestRun(request: Request, env: Env, headers: any): Promise<Response> {
+  const auth = request.headers.get('Authorization');
+  // Use dedicated backtest secret or disable if not configured
+  if (!env.BACKTEST_SECRET || !auth || auth !== `Bearer ${env.BACKTEST_SECRET}`) {
+     return new Response('Unauthorized', { status: 401, headers });
+  }
+
+  let body: any;
+  try {
+    body = await request.json();
+  } catch (e) {
+    return new Response('Invalid JSON', { status: 400, headers });
+  }
+
+  const { instrument, limit = 5000 } = body;
+  if (!instrument) return new Response('Missing instrument', { status: 400, headers });
+
+  const marketProvider = new TwelveDataMarketProvider(env.TWELVEDATA_API_KEY || 'mock_key');
+  
+  try {
+    // 1. Fetch large historical payload safely bounded by provider limits
+    const raw1H = await marketProvider.fetchCandles(instrument, '1H', limit);
+    const raw5M = await marketProvider.fetchCandles(instrument, '5M', limit * 12); // Need more 5M candles for alignment
+
+    const val1H = MarketDataValidator.validateAndNormalize(raw1H);
+    const val5M = MarketDataValidator.validateAndNormalize(raw5M);
+
+    if (!val1H.valid || !val5M.valid) {
+       return new Response('Data Validation Failed', { status: 500, headers });
+    }
+
+    // 2. Define Execution Assumptions Explicitly
+    const config: BacktestConfig = {
+      initialCapital: 10000,
+      riskPerTradePercent: 1.0,
+      spreadPips: body.spreadPips !== undefined ? body.spreadPips : 0.00015,
+      commissionPercent: body.commissionPercent !== undefined ? body.commissionPercent : 0.00005,
+      slippagePips: body.slippagePips !== undefined ? body.slippagePips : 0.00005,
+      symbol: instrument,
+      strategyConfig: {
+        htfTimeframe: '1H',
+        ltfTimeframe: '5M',
+        swingLengthHTF: 3,
+        swingLengthLTF: 2,
+        atrLength: 14,
+        displacementSizeMultiplier: 1.5,
+        displacementBodyRatio: 0.5,
+        displacementCloseLocation: 0.5,
+        fvgMinAtrRatio: 0.5,
+        alertScoreThreshold: 65
+      }
+    };
+
+    const engine = new BacktestEngine(config);
+    const report = engine.run(val1H.candles, val5M.candles);
+
+    return Response.json(report, { headers });
+  } catch (error: any) {
+    return new Response(JSON.stringify({ error: error.message }), { status: 500, headers });
+  }
 }
