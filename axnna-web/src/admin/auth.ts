@@ -1,10 +1,11 @@
 const COOKIE_NAME = 'axnna_admin_session';
 const SESSION_TTL_SECONDS = 12 * 60 * 60;
 
-interface SessionPayload {
+export interface SessionPayload {
   iat: number;
   exp: number;
   nonce: string;
+  ver: string;
 }
 
 function toBase64Url(bytes: Uint8Array): string {
@@ -54,20 +55,26 @@ async function getHmacKey(secret: string): Promise<CryptoKey> {
   );
 }
 
-/** Verifies the submitted passphrase in constant time using SHA-256 digests. */
-export async function verifyPassphrase(submitted: string, expected?: string): Promise<boolean> {
+/** Compares two secret strings in constant time using SHA-256 digests. */
+export async function constantTimeSecretMatch(submitted: string, expected?: string): Promise<boolean> {
   if (!expected || !submitted) return false;
   const [a, b] = await Promise.all([sha256(submitted), sha256(expected)]);
   return constantTimeEqual(a, b);
 }
 
+/** Verifies the submitted passphrase in constant time using SHA-256 digests. */
+export async function verifyPassphrase(submitted: string, expected?: string): Promise<boolean> {
+  return constantTimeSecretMatch(submitted, expected);
+}
+
 /** Issues an HMAC-SHA256 signed session token valid for 12 hours. */
-export async function createSessionToken(secret: string): Promise<string> {
+export async function createSessionToken(secret: string, version: string = '1'): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const payload: SessionPayload = {
     iat: now,
     exp: now + SESSION_TTL_SECONDS,
     nonce: crypto.randomUUID(),
+    ver: version,
   };
   const encodedPayload = toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
   const key = await getHmacKey(secret);
@@ -75,16 +82,20 @@ export async function createSessionToken(secret: string): Promise<string> {
   return `${encodedPayload}.${toBase64Url(new Uint8Array(sig))}`;
 }
 
-/** Verifies an HMAC-SHA256 session token and checks expiration. */
-export async function verifySessionToken(token: string, secret: string): Promise<boolean> {
+/** Verifies an HMAC-SHA256 session token, its expiration, and version claim. */
+export async function verifySessionToken(
+  token: string,
+  secret: string,
+  expectedVersion?: string
+): Promise<{ valid: boolean; payload?: SessionPayload }> {
   const dotIdx = token.indexOf('.');
-  if (dotIdx <= 0) return false;
+  if (dotIdx <= 0) return { valid: false };
 
   const encodedPayload = token.slice(0, dotIdx);
   const encodedSig = token.slice(dotIdx + 1);
   const sigBytes = fromBase64Url(encodedSig);
   const payloadBytes = fromBase64Url(encodedPayload);
-  if (!sigBytes || !payloadBytes) return false;
+  if (!sigBytes || !payloadBytes) return { valid: false };
 
   const key = await getHmacKey(secret);
   const validSig = await crypto.subtle.verify(
@@ -93,14 +104,20 @@ export async function verifySessionToken(token: string, secret: string): Promise
     sigBytes.buffer as ArrayBuffer,
     new TextEncoder().encode(encodedPayload)
   );
-  if (!validSig) return false;
+  if (!validSig) return { valid: false };
 
   try {
     const payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as SessionPayload;
     const now = Math.floor(Date.now() / 1000);
-    return typeof payload.exp === 'number' && payload.exp > now;
+    if (typeof payload.exp !== 'number' || payload.exp <= now || typeof payload.nonce !== 'string') {
+      return { valid: false };
+    }
+    if (expectedVersion && payload.ver !== expectedVersion) {
+      return { valid: false };
+    }
+    return { valid: true, payload };
   } catch {
-    return false;
+    return { valid: false };
   }
 }
 

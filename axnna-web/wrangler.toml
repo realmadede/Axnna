@@ -3,11 +3,17 @@ compatibility_date = "2024-03-20"
 compatibility_flags = ["nodejs_compat"]
 main = "src/worker.ts"
 
-[site]
-bucket = "./dist"
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
 
 [build]
 command = "npm run build"
+
+[vars]
+ENVIRONMENT = "development"
 
 [[d1_databases]]
 binding = "DB"
@@ -16,4 +22,42 @@ database_id = "local-db-id"
 migrations_dir = "./migrations"
 
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/5 * * * *", "0 21 * * *"]
+
+# ---------------------------------------------------------------------------
+# Staging Environment (Manual provisioning required in Stage D / pre-deploy)
+# ---------------------------------------------------------------------------
+[env.staging]
+name = "axnna-staging"
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+ALLOWED_ORIGINS = "https://axnna-staging.madede.workers.dev"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "axnna_db_staging"
+database_id = "REPLACE_WITH_STAGING_D1_DATABASE_ID"
+migrations_dir = "./migrations"
+
+[env.staging.triggers]
+crons = ["*/5 * * * *", "0 21 * * *"]
+
+# ---------------------------------------------------------------------------
+# Production Environment (axnna.madede.workers.dev)
+# ---------------------------------------------------------------------------
+[env.production]
+name = "axnna"
+
+[env.production.vars]
+ENVIRONMENT = "production"
+ALLOWED_ORIGINS = "https://axnna.madede.workers.dev"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "axnna_db_production"
+database_id = "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+migrations_dir = "./migrations"
+
+[env.production.triggers]
+crons = ["*/5 * * * *", "0 21 * * *"]

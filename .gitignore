@@ -27,6 +27,11 @@ dist-ssr
 .env
 .env.*
 !.env.example
+.dev.vars
+
+# Build / TypeScript / Test caches
+*.tsbuildinfo
+coverage/
 
 # Cloudflare
 .wrangler/

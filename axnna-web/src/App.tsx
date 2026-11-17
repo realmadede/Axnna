@@ -1,11 +1,14 @@
 import { Moon, Sun } from 'lucide-react';
 import React, { Suspense, lazy, useState, useEffect } from 'react';
 import { Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
+import { AxnnaLogo } from './components/AxnnaLogo';
+import { trackAnalyticsEvent } from './utils/analytics';
 
 const Landing = lazy(() => import('./pages/Landing'));
 const ConnectTelegram = lazy(() => import('./pages/ConnectTelegram'));
 const Strategies = lazy(() => import('./pages/Strategies'));
 const Config = lazy(() => import('./pages/Config'));
+const Status = lazy(() => import('./pages/Status'));
 const About = lazy(() => import('./pages/About'));
 const Contact = lazy(() => import('./pages/Contact'));
 const FAQ = lazy(() => import('./pages/FAQ'));
@@ -59,6 +62,10 @@ function Layout({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  useEffect(() => {
+    trackAnalyticsEvent('PAGE_VIEW', location.pathname);
+  }, [location.pathname]);
+
   const toggleTheme = () => {
     if (isLight) {
       document.body.classList.remove('light-mode');
@@ -77,7 +84,7 @@ function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div>
       <header className="layout-header">
-        <Link to="/" className="logo">Axnna</Link>
+        <Link to="/" className="logo"><AxnnaLogo size={28} /></Link>
         <Link to="/#how-it-works">How it works</Link>
         <Link to="/strategies" className={isActive('/strategies')}>Strategy</Link>
         <Link to="/#features">Features</Link>
@@ -100,7 +107,7 @@ function Layout({ children }: { children: React.ReactNode }) {
 
       <footer className="footer">
         <div className="footer-col">
-          <Link to="/" className="logo" style={{ fontSize: '1.25rem', fontWeight: 600, color: 'white' }}>Axnna</Link>
+          <Link to="/" className="logo" style={{ fontSize: '1.25rem', fontWeight: 600, color: 'var(--text-color)' }}><AxnnaLogo size={26} /></Link>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '1rem' }}>
             Automated market analysis delivered through Telegram.
           </p>
@@ -126,6 +133,7 @@ function Layout({ children }: { children: React.ReactNode }) {
         <div className="footer-col">
           <h4>System</h4>
           <ul>
+            <li><Link to="/status">Status</Link></li>
             <li><Link to="/config">Config</Link></li>
           </ul>
         </div>
@@ -147,6 +155,7 @@ export default function App() {
         <Route path="/about" element={<div className="container" style={{paddingTop:'4rem'}}><About /></div>} />
         <Route path="/contact" element={<div className="container" style={{paddingTop:'4rem'}}><Contact /></div>} />
         <Route path="/faq" element={<div className="container" style={{paddingTop:'4rem'}}><FAQ /></div>} />
+        <Route path="/status" element={<div className="container" style={{paddingTop:'4rem'}}><Status /></div>} />
         <Route path="/legal/:page" element={<div className="container" style={{paddingTop:'4rem'}}><Legal /></div>} />
         
         <Route path="/connect-telegram" element={<ConnectTelegram />} />

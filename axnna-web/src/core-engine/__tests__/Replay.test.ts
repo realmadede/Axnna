@@ -5,7 +5,7 @@ import { StrategyEngine } from '../StrategyEngine';
 
 function generateReplayCandles(count: number, timeframeMs: number, startPrice: number): InternalCandle[] {
   const candles: InternalCandle[] = [];
-  let currentPrice = startPrice;
+  const currentPrice = startPrice;
   let time = 1600000000000;
 
   for (let i = 0; i < count; i++) {

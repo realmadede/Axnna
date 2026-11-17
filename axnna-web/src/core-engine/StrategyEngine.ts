@@ -6,10 +6,14 @@ import {
   Direction,
   HTFBias,
   LiquidityReference,
+  PersistedStrategyState,
   StrategyConfig,
   SweepEvidence
 } from './Types';
 import { ScoringModel } from './ScoringModel';
+
+export const STRATEGY_STATE_SCHEMA_VERSION = 1;
+export const DEFAULT_STRATEGY_VERSION = 'technical-v1';
 
 export class StrategyEngine {
   private config: StrategyConfig;
@@ -28,6 +32,7 @@ export class StrategyEngine {
 
   private atr: number | null = null;
   private trueRanges: number[] = [];
+  private lastProcessed5mTimestamp = 0;
 
   constructor(config: StrategyConfig) {
     this.config = config;
@@ -35,6 +40,109 @@ export class StrategyEngine {
 
   public getActiveCandidate(): Partial<CandidateSetup> | null {
     return this.activeCandidate;
+  }
+
+  public getLastProcessedTimestamp(): number {
+    return this.lastProcessed5mTimestamp;
+  }
+
+  public exportState(strategyVersion: string = DEFAULT_STRATEGY_VERSION): PersistedStrategyState {
+    const keepCount = Math.max(50, this.config.atrLength + 10, 2 * this.config.swingLengthLTF + 5);
+    return {
+      schemaVersion: STRATEGY_STATE_SCHEMA_VERSION,
+      strategyVersion,
+      lastProcessed5mTimestamp: this.lastProcessed5mTimestamp,
+      currentHtfBias: this.currentHtfBias,
+      activeBsl: this.activeBsl,
+      activeSsl: this.activeSsl,
+      activeCandidate: this.activeCandidate,
+      atr: this.atr,
+      trueRanges: this.atr === null ? [...this.trueRanges] : [],
+      recentLtfCandles: this.ltfCandles.slice(-keepCount),
+    };
+  }
+
+  public restoreState(
+    raw: unknown,
+    expectedStrategyVersion: string = DEFAULT_STRATEGY_VERSION
+  ): { restored: boolean; reason?: string } {
+    if (!raw || typeof raw !== 'object') {
+      return { restored: false, reason: 'Invalid or empty persisted state' };
+    }
+    const s = raw as Partial<PersistedStrategyState>;
+    if (s.schemaVersion !== STRATEGY_STATE_SCHEMA_VERSION) {
+      return { restored: false, reason: `Schema version mismatch: ${String(s.schemaVersion)}` };
+    }
+    if (s.strategyVersion !== expectedStrategyVersion) {
+      return { restored: false, reason: `Strategy version mismatch: ${String(s.strategyVersion)}` };
+    }
+    if (
+      typeof s.lastProcessed5mTimestamp !== 'number' ||
+      !Number.isFinite(s.lastProcessed5mTimestamp) ||
+      !Array.isArray(s.recentLtfCandles) ||
+      !Array.isArray(s.trueRanges)
+    ) {
+      return { restored: false, reason: 'Malformed persisted state fields' };
+    }
+
+    this.lastProcessed5mTimestamp = s.lastProcessed5mTimestamp;
+    this.currentHtfBias = s.currentHtfBias ?? 'NEUTRAL';
+    this.activeBsl = s.activeBsl ?? null;
+    this.activeSsl = s.activeSsl ?? null;
+    this.activeCandidate = s.activeCandidate ?? null;
+    this.atr = typeof s.atr === 'number' && Number.isFinite(s.atr) ? s.atr : null;
+    this.trueRanges = s.trueRanges.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+    this.ltfCandles = [...s.recentLtfCandles]
+      .filter((c) => c && c.isCompleted !== false && typeof c.timestamp === 'number')
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    return { restored: true };
+  }
+
+  /**
+   * Incrementally processes completed HTF and LTF candles strictly newer than `lastProcessed5mTimestamp`,
+   * preserving active setup candidates, ATR, and liquidity levels across Worker executions.
+   */
+  public processIncremental(
+    htfCandles: InternalCandle[],
+    ltfCandles: InternalCandle[],
+    fromTimestamp: number = this.lastProcessed5mTimestamp
+  ): { setups: CandidateSetup[]; lastProcessed5mTimestamp: number } {
+    const normalizeCompleted = (rows: InternalCandle[]): InternalCandle[] => {
+      const byTs = new Map<number, InternalCandle>();
+      for (const c of rows) {
+        if (!c || c.isCompleted !== true || typeof c.timestamp !== 'number') continue;
+        byTs.set(c.timestamp, c);
+      }
+      return Array.from(byTs.values()).sort((a, b) => a.timestamp - b.timestamp);
+    };
+
+    this.htfCandles = normalizeCompleted(htfCandles);
+    this.htfSwingHighs = [];
+    this.htfSwingLows = [];
+    this.currentHtfBias = 'NEUTRAL';
+    this.calculateHtfStructure();
+
+    const orderedLtf = normalizeCompleted(ltfCandles).filter((c) => c.timestamp > fromTimestamp);
+    const setups: CandidateSetup[] = [];
+    let latestTs = Math.max(this.lastProcessed5mTimestamp, fromTimestamp);
+
+    for (const candle of orderedLtf) {
+      this.ltfCandles.push(candle);
+      const candidate = this.processLtfCandle(candle);
+      if (candidate && (candidate.status === 'REJECTED' || candidate.status === 'ALERT_ELIGIBLE' || candidate.status === 'QUALIFIED')) {
+        setups.push(candidate);
+      }
+      latestTs = candle.timestamp;
+    }
+
+    const keepCount = Math.max(50, this.config.atrLength + 10, 2 * this.config.swingLengthLTF + 5);
+    if (this.ltfCandles.length > keepCount) {
+      this.ltfCandles = this.ltfCandles.slice(-keepCount);
+    }
+    this.lastProcessed5mTimestamp = latestTs;
+
+    return { setups, lastProcessed5mTimestamp: latestTs };
   }
 
   public processCandles(htfCandles: InternalCandle[], ltfCandles: InternalCandle[]): CandidateSetup[] {
@@ -51,6 +159,7 @@ export class StrategyEngine {
     this.activeCandidate = null;
     this.atr = null;
     this.trueRanges = [];
+    this.lastProcessed5mTimestamp = 0;
 
     // Pre-calculate HTF swings & bias
     this.calculateHtfStructure();
@@ -63,6 +172,7 @@ export class StrategyEngine {
       if (candidate && (candidate.status === 'REJECTED' || candidate.status === 'ALERT_ELIGIBLE' || candidate.status === 'QUALIFIED')) {
         results.push(candidate);
       }
+      this.lastProcessed5mTimestamp = candle.timestamp;
     }
 
     return results;

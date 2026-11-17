@@ -63,11 +63,11 @@ describe('BacktestEngine', () => {
       }]
     };
     
-    // @ts-ignore
+    // @ts-expect-error test override
     engine['run'] = function(this: BacktestEngine, candles1H, candles5M) {
       // Overriding the run loop to inject the mock strategy
       let activeTrade: any = null;
-      let rejectedCount = 0;
+      const rejectedCount = 0;
       const processedSetups = new Set<string>();
       
       for (let i = 0; i < candles5M.length; i++) {
@@ -201,10 +201,10 @@ describe('BacktestEngine', () => {
       }]
     };
     
-    // @ts-ignore
+    // @ts-expect-error test override
     engine['run'] = function(this: BacktestEngine, candles1H, candles5M) {
        // Mock the loop slightly differently to just test entry
-       let activeTrade: any = null;
+       const activeTrade: any = null;
        const processedSetups = new Set<string>();
        
        for (let i = 0; i < candles5M.length; i++) {
@@ -281,7 +281,7 @@ describe('BacktestEngine', () => {
       }]
     };
     
-    // @ts-ignore
+    // @ts-expect-error test override
     engine['run'] = function(this: BacktestEngine, candles1H, candles5M) {
        let pendingTrade: any = null;
        let activeTrade: any = null;
@@ -351,7 +351,7 @@ describe('Execution Boundaries', () => {
       }]
     };
     
-    // @ts-ignore
+    // @ts-expect-error test override
     engine['run'] = function(this: BacktestEngine, candles1H, candles5M) {
        let pendingTrade: any = null;
        let activeTrade: any = null;

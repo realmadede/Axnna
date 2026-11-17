@@ -166,64 +166,63 @@ export class BacktestEngine {
       const slippageRaw = costs.slippagePips * costs.pipSize;
       const halfSpread = spreadRaw / 2;
 
-      // 1. Check if pending trade triggers entry
+      // 1. Check if pending trade triggers entry (expiry > 15m checked strictly before fill/invalidation)
       if (pendingTrade && !activeTrade) {
-         const { setup } = pendingTrade;
-         const chartHigh = currentLTFCandle.high;
-         const chartLow = currentLTFCandle.low;
-         
-         let triggeredEntry = false;
-         let invalidated = false;
-
-         // Twelve Data historical FX is a liquidity composite (midpoint).
-         // Approximation: Bid = Midpoint - spread/2, Ask = Midpoint + spread/2
-         if (setup.direction === 'LONG') {
-             // LONG STOP (Market Sell): Triggers when Bid <= Stop
-             // Bid = chartLow - halfSpread
-             const stopTriggered = (chartLow - halfSpread) <= setup.stopLossPrice!;
-             
-             // LONG ENTRY (Limit Buy): Fills when Ask <= Entry Limit
-             // Ask = chartLow + halfSpread
-             const entryTriggered = (chartLow + halfSpread) <= setup.entryPrice!;
-             
-             if (stopTriggered) {
-                invalidated = true; // Hit stop loss before/during entry
-             } else if (entryTriggered) {
-                triggeredEntry = true;
-             }
-         } else {
-             // SHORT STOP (Market Buy): Triggers when Ask >= Stop
-             // Ask = chartHigh + halfSpread
-             const stopTriggered = (chartHigh + halfSpread) >= setup.stopLossPrice!;
-             
-             // SHORT ENTRY (Limit Sell): Fills when Bid >= Entry Limit
-             // Bid = chartHigh - halfSpread
-             const entryTriggered = (chartHigh - halfSpread) >= setup.entryPrice!;
-
-             if (stopTriggered) {
-                invalidated = true; 
-             } else if (entryTriggered) {
-                triggeredEntry = true;
-             }
-         }
-
-         if (invalidated) {
-             diagCancellations++;
-             pendingTrade = null; // Missed or hit stop before entry could safely execute
-         } else if (triggeredEntry) {
-             diagTouches++;
-             let actualEntry = setup.entryPrice!;
-             // Slippage is execution deterioration relative to intended price
-             if (setup.direction === 'LONG') actualEntry += slippageRaw; // Buy higher
-             if (setup.direction === 'SHORT') actualEntry -= slippageRaw; // Sell lower
-             
-             activeTrade = { setup: { ...setup, entryPrice: actualEntry }, entryTime: currentTimestamp };
+         const elapsedMs = currentTimestamp - pendingTrade.creationTime;
+         if (elapsedMs > 15 * 60 * 1000) {
+             diagExpiries++;
              pendingTrade = null;
          } else {
-             // Expiry: Strategy uses a 3-candle pending order limit (15 mins)
-             const elapsedMs = currentTimestamp - pendingTrade.creationTime;
-             if (elapsedMs > 15 * 60 * 1000) {
-                 diagExpiries++;
+             const { setup } = pendingTrade;
+             const chartHigh = currentLTFCandle.high;
+             const chartLow = currentLTFCandle.low;
+             
+             let triggeredEntry = false;
+             let invalidated = false;
+
+             // Twelve Data historical FX is a liquidity composite (midpoint).
+             // Approximation: Bid = Midpoint - spread/2, Ask = Midpoint + spread/2
+             if (setup.direction === 'LONG') {
+                 // LONG STOP (Market Sell): Triggers when Bid <= Stop
+                 // Bid = chartLow - halfSpread
+                 const stopTriggered = (chartLow - halfSpread) <= setup.stopLossPrice!;
+                 
+                 // LONG ENTRY (Limit Buy): Fills when Ask <= Entry Limit
+                 // Ask = chartLow + halfSpread
+                 const entryTriggered = (chartLow + halfSpread) <= setup.entryPrice!;
+                 
+                 if (stopTriggered) {
+                    invalidated = true; // Hit stop loss before/during entry
+                 } else if (entryTriggered) {
+                    triggeredEntry = true;
+                 }
+             } else {
+                 // SHORT STOP (Market Buy): Triggers when Ask >= Stop
+                 // Ask = chartHigh + halfSpread
+                 const stopTriggered = (chartHigh + halfSpread) >= setup.stopLossPrice!;
+                 
+                 // SHORT ENTRY (Limit Sell): Fills when Bid >= Entry Limit
+                 // Bid = chartHigh - halfSpread
+                 const entryTriggered = (chartHigh - halfSpread) >= setup.entryPrice!;
+
+                 if (stopTriggered) {
+                    invalidated = true; 
+                 } else if (entryTriggered) {
+                    triggeredEntry = true;
+                 }
+             }
+
+             if (invalidated) {
+                 diagCancellations++;
+                 pendingTrade = null; // Missed or hit stop before entry could safely execute
+             } else if (triggeredEntry) {
+                 diagTouches++;
+                 let actualEntry = setup.entryPrice!;
+                 // Slippage is execution deterioration relative to intended price
+                 if (setup.direction === 'LONG') actualEntry += slippageRaw; // Buy higher
+                 if (setup.direction === 'SHORT') actualEntry -= slippageRaw; // Sell lower
+                 
+                 activeTrade = { setup: { ...setup, entryPrice: actualEntry }, entryTime: currentTimestamp };
                  pendingTrade = null;
              }
          }

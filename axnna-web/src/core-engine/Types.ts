@@ -1,3 +1,5 @@
+import type { InternalCandle } from './MarketData';
+
 export type Direction = 'LONG' | 'SHORT';
 export type HTFBias = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
 export type SetupStatus = 'DETECTED' | 'QUALIFIED' | 'REJECTED' | 'EXPIRED' | 'ALERT_ELIGIBLE' | 'ALERTED';
@@ -87,4 +89,17 @@ export interface CandidateSetup {
   invalidationReason?: string;
   technicalScore: number;
   status: SetupStatus;
+}
+
+export interface PersistedStrategyState {
+  schemaVersion: number;
+  strategyVersion: string;
+  lastProcessed5mTimestamp: number;
+  currentHtfBias: HTFBias;
+  activeBsl: LiquidityReference | null;
+  activeSsl: LiquidityReference | null;
+  activeCandidate: Partial<CandidateSetup> | null;
+  atr: number | null;
+  trueRanges: number[];
+  recentLtfCandles: InternalCandle[];
 }

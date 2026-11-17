@@ -8,7 +8,7 @@ on:
 
 jobs:
   ci:
-    name: Typecheck, Test & Build
+    name: Typecheck, Lint, Test & Build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -21,7 +21,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: axnna-web/package-lock.json
 
@@ -31,8 +31,11 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Run unit tests
-        run: npx vitest run --exclude src/providers/__tests__/LiveMarketProvider.test.ts
+      - name: Lint
+        run: npm run lint
+
+      - name: Run test suite
+        run: npm test
 
       - name: Build frontend
         run: npm run build

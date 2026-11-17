@@ -127,6 +127,8 @@ a:hover {
 }
 
 .layout-header .logo {
+  display: inline-flex;
+  align-items: center;
   font-size: 1.25rem;
   font-weight: 600;
   color: var(--text-color);
@@ -323,6 +325,33 @@ a:hover {
   gap: 1rem;
 }
 
+.admin-subgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.admin-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.admin-select {
+  padding: 0.55rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  color: var(--text-color);
+  font-size: 0.875rem;
+}
+
+.admin-badge--warn {
+  background: rgba(255, 159, 10, 0.16);
+  color: #ff9f0a;
+}
+
 .admin-table-wrap {
   width: 100%;
   overflow-x: auto;
@@ -394,6 +423,12 @@ a:hover {
   background: rgba(52, 199, 89, 0.12);
   border: 1px solid rgba(52, 199, 89, 0.3);
   color: var(--success-color);
+}
+
+.admin-alert--warn {
+  background: rgba(255, 159, 10, 0.14);
+  border: 1px solid rgba(255, 159, 10, 0.35);
+  color: #ff9f0a;
 }
 
 @media (max-width: 768px) {

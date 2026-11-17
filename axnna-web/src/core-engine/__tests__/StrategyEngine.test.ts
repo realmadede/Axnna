@@ -27,10 +27,10 @@ function generateCandles(count: number, startPrice: number, direction: 'UP' | 'D
     const dir = direction === 'UP' ? 1 : -1;
     
     // Create some structure
-    let high = currentPrice + (dir === 1 ? range : range * 0.2);
-    let low = currentPrice - (dir === -1 ? range : range * 0.2);
-    let close = currentPrice + (dir * range * 0.8);
-    let open = currentPrice;
+    const high = currentPrice + (dir === 1 ? range : range * 0.2);
+    const low = currentPrice - (dir === -1 ? range : range * 0.2);
+    const close = currentPrice + (dir * range * 0.8);
+    const open = currentPrice;
 
     candles.push({
       symbol: 'EUR/USD',

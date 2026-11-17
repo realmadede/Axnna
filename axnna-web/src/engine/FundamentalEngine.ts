@@ -2,8 +2,14 @@ import { EconomicEvent } from '../providers/FundamentalProvider';
 import { Direction } from './Types';
 
 export type MacroRegime = 'RISK_ON' | 'RISK_OFF' | 'HAWKISH' | 'DOVISH' | 'MIXED' | 'UNCERTAIN';
-export type EventRisk = 'NONE' | 'LOW' | 'ELEVATED' | 'HIGH' | 'EXTREME';
-export type Confluence = 'STRONG ALIGNMENT' | 'MODERATE ALIGNMENT' | 'NEUTRAL' | 'CONFLICT' | 'HIGH EVENT RISK';
+export type EventRisk = 'NONE' | 'LOW' | 'ELEVATED' | 'HIGH' | 'EXTREME' | 'UNKNOWN';
+export type Confluence =
+  | 'STRONG ALIGNMENT'
+  | 'MODERATE ALIGNMENT'
+  | 'NEUTRAL'
+  | 'CONFLICT'
+  | 'HIGH EVENT RISK'
+  | 'FUNDAMENTAL UNAVAILABLE';
 
 export interface IndicatorDefinition {
   indicator: string;
@@ -21,6 +27,11 @@ export interface FundamentalContext {
   eventRisk: EventRisk;
   upcomingHighImpactEvent: EconomicEvent | null;
   timeUntilEventMs: number | null;
+  dataAvailable?: boolean;
+}
+
+export interface EvaluateContextOptions {
+  calendarDataAvailable?: boolean;
 }
 
 const INDICATORS: Record<string, IndicatorDefinition> = {
@@ -39,7 +50,13 @@ export class FundamentalEngine {
     postEventDecayMinutes: 60,
   };
 
-  public evaluateContext(instrument: string, events: EconomicEvent[], currentTime: Date = new Date()): FundamentalContext {
+  public evaluateContext(
+    instrument: string,
+    events: EconomicEvent[],
+    currentTime: Date = new Date(),
+    options?: EvaluateContextOptions
+  ): FundamentalContext {
+    const dataAvailable = options?.calendarDataAvailable ?? (events.length > 0);
     // 1. Currency Exposure
     // e.g., EURUSD is exposed to EUR and USD.
     const base = instrument.substring(0, 3);
@@ -47,8 +64,8 @@ export class FundamentalEngine {
 
     const relevantEvents = events.filter(e => e.currency === base || e.currency === quote);
 
-    // 2. Event Risk Window
-    let eventRisk: EventRisk = 'NONE';
+    // 2. Event Risk Window (explicitly 'UNKNOWN' when fundamental calendar data is unavailable)
+    let eventRisk: EventRisk = dataAvailable ? 'NONE' : 'UNKNOWN';
     let upcomingEvent: EconomicEvent | null = null;
     let minTimeMs: number | null = null;
 
@@ -143,13 +160,17 @@ export class FundamentalEngine {
       macroRegime: regime,
       eventRisk,
       upcomingHighImpactEvent: upcomingEvent,
-      timeUntilEventMs: minTimeMs
+      timeUntilEventMs: minTimeMs,
+      dataAvailable,
     };
   }
 
   public getConfluence(context: FundamentalContext, techDirection: Direction): Confluence {
     if (context.eventRisk === 'EXTREME' || context.eventRisk === 'HIGH') {
       return 'HIGH EVENT RISK';
+    }
+    if (context.dataAvailable === false || context.eventRisk === 'UNKNOWN') {
+      return 'FUNDAMENTAL UNAVAILABLE';
     }
 
     const isFundyBullish = context.fundamentalScore > 20;
