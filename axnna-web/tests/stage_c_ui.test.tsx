@@ -176,26 +176,15 @@ describe('Stage C Interactive UI & Admin Console Tests', () => {
     });
   });
 
-  it('Contact form submits feedback to /api/feedback and displays success or error feedback', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, id: 'c_1', message: 'Saved cleanly.' }), { status: 201 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Too many submissions.' }), { status: 429 }));
-    vi.stubGlobal('fetch', fetchMock);
-
+  it('Contact page renders direct Telegram support link to t.me/mad_ede without legacy form', () => {
     render(<Contact />);
-    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Testing feedback form submission path.' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send Feedback' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Saved cleanly.')).toBeTruthy();
-    });
-
-    fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'Second submission expecting 429 error.' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send Feedback' }));
-    await waitFor(() => {
-      expect(screen.getByText('Too many submissions.')).toBeTruthy();
-    });
+    const links = screen.getAllByRole('link', { name: /mad_ede/i });
+    expect(links.length).toBeGreaterThan(0);
+    for (const link of links) {
+      expect(link.getAttribute('href')).toBe('https://t.me/mad_ede');
+      expect(link.getAttribute('target')).toBe('_blank');
+    }
+    expect(screen.queryByRole('button', { name: 'Send Feedback' })).toBeNull();
   });
 
   it('Config Admin console handles login, true SQL totals KPIs, all key tabs, sync warnings/failures, retries, and resolution', async () => {
