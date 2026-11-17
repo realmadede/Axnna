@@ -304,7 +304,7 @@ export default function Landing() {
             <div className="glass-card" style={{ textAlign: 'center' }}>
               <Shield size={32} color="var(--accent-color)" style={{ margin: '0 auto 1rem' }} />
               <h3 style={{ fontWeight: 600 }}>Macro Data</h3>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Finnhub Events</p>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Economic Calendar</p>
             </div>
           </div>
 

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import worker from '../worker';
-import { Env } from '../worker';
+import worker, { deliverTelegramAlerts, Env } from '../worker';
+import { FundamentalEngine } from '../engine/FundamentalEngine';
+import { StrategyEngine } from '../core-engine/StrategyEngine';
+import { CandidateSetup } from '../core-engine/Types';
 
 describe('Worker CRON Integration', () => {
   let mockEnv: Env;
@@ -68,5 +70,126 @@ describe('Worker CRON Integration', () => {
     expect(mockEnv.DB.prepare).toHaveBeenCalledWith(
        expect.stringContaining('SELECT * FROM market_candles')
     );
+  });
+
+  it('delivers Telegram alerts to connected users and skips already-sent deliveries', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, result: { message_id: 42 } })
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const sig: CandidateSetup = {
+      setupId: 'sig_123',
+      symbol: 'EURUSD',
+      direction: 'LONG',
+      strategyVersion: 'technical-v1',
+      detectionTimestamp: Date.now(),
+      analysisTimeframe: '1H',
+      executionTimeframe: '5M',
+      htfBias: 'BULLISH',
+      entryPrice: 1.105,
+      stopLossPrice: 1.1,
+      structuralTargetPrice: 1.12,
+      technicalScore: 80,
+      status: 'ALERT_ELIGIBLE'
+    };
+
+    const context = {
+      instrument: 'EURUSD',
+      fundamentalScore: 40,
+      confidence: 0.6,
+      macroRegime: 'DOVISH' as const,
+      eventRisk: 'NONE' as const,
+      upcomingHighImpactEvent: null,
+      timeUntilEventMs: null
+    };
+
+    // Case 1: user has not received alert yet
+    (mockEnv.DB.prepare as any).mockImplementation((query: string) => ({
+      bind: vi.fn().mockReturnThis(),
+      run: vi.fn().mockResolvedValue({}),
+      first: vi.fn().mockResolvedValue(null),
+      all: vi.fn().mockResolvedValue({
+        results: query.includes('axnna_users') ? [{ id: 'user_1', telegram_chat_id: 'chat_99' }] : []
+      })
+    }));
+
+    const sent = await deliverTelegramAlerts(mockEnv, sig, 'EURUSD', 3.0, context, 'MODERATE ALIGNMENT');
+    expect(sent).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.telegram.org/botmock_bot/sendMessage',
+      expect.objectContaining({ method: 'POST' })
+    );
+
+    // Case 2: already marked SENT in notification_deliveries
+    fetchMock.mockClear();
+    (mockEnv.DB.prepare as any).mockImplementation((query: string) => ({
+      bind: vi.fn().mockReturnThis(),
+      run: vi.fn().mockResolvedValue({}),
+      first: vi.fn().mockResolvedValue(query.includes('notification_deliveries') ? { status: 'SENT' } : null),
+      all: vi.fn().mockResolvedValue({
+        results: query.includes('axnna_users') ? [{ id: 'user_1', telegram_chat_id: 'chat_99' }] : []
+      })
+    }));
+
+    const resent = await deliverTelegramAlerts(mockEnv, sig, 'EURUSD', 3.0, context, 'MODERATE ALIGNMENT');
+    expect(resent).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('suppresses Telegram alerts during HIGH EVENT RISK', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const processSpy = vi.spyOn(StrategyEngine.prototype, 'processCandles').mockReturnValue([
+      {
+        setupId: 'sig_risk_1',
+        symbol: 'EURUSD',
+        direction: 'LONG',
+        strategyVersion: 'technical-v1',
+        detectionTimestamp: Date.now(),
+        analysisTimeframe: '1H',
+        executionTimeframe: '5M',
+        htfBias: 'BULLISH',
+        entryPrice: 1.105,
+        stopLossPrice: 1.1,
+        structuralTargetPrice: 1.12,
+        technicalScore: 85,
+        status: 'ALERT_ELIGIBLE'
+      }
+    ]);
+    const confluenceSpy = vi.spyOn(FundamentalEngine.prototype, 'getConfluence').mockReturnValue('HIGH EVENT RISK');
+
+    const candle = {
+      instrument: 'EURUSD',
+      timeframe: '5M',
+      timestamp: new Date().toISOString(),
+      open: 1.1,
+      high: 1.11,
+      low: 1.09,
+      close: 1.105
+    };
+
+    (mockEnv.DB.prepare as any).mockImplementation((query: string) => ({
+      bind: vi.fn().mockReturnThis(),
+      run: vi.fn().mockResolvedValue({}),
+      first: vi.fn().mockResolvedValue(null),
+      all: vi.fn().mockResolvedValue({
+        results: query.includes('market_candles')
+          ? [candle]
+          : query.includes('axnna_users')
+            ? [{ id: 'user_1', telegram_chat_id: 'chat_99' }]
+            : []
+      })
+    }));
+
+    await worker.runStrategyEngine(mockEnv, 'EURUSD');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    processSpy.mockRestore();
+    confluenceSpy.mockRestore();
   });
 });

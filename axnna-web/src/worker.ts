@@ -1,15 +1,19 @@
 import { StrategyEngine } from './core-engine/StrategyEngine';
+import { CandidateSetup } from './core-engine/Types';
 import { MarketDataValidator, InternalCandle } from './core-engine/MarketData';
 import { TwelveDataMarketProvider } from "./providers/MarketProvider";
-import { FinnhubFundamentalProvider } from "./providers/FundamentalProvider";
-import { FundamentalEngine } from "./engine/FundamentalEngine";
+import { EconomicEvent, FreeEconomicCalendarProvider } from "./providers/FundamentalProvider";
+import { Confluence, FundamentalContext, FundamentalEngine } from "./engine/FundamentalEngine";
+import { handleAdminRoutes } from './admin/routes';
 
 export interface Env {
   DB: D1Database;
   TELEGRAM_BOT_TOKEN: string;
   TWELVEDATA_API_KEY: string;
-  FINNHUB_API_KEY: string;
+  FINNHUB_API_KEY?: string;
   BACKTEST_SECRET?: string;
+  ADMIN_PASSPHRASE?: string;
+  ADMIN_SESSION_SECRET?: string;
 }
 
 export default {
@@ -70,6 +74,11 @@ export default {
       return await handleBacktestRun(request, env, corsHeaders);
     }
 
+    const adminRes = await handleAdminRoutes(request, env, url, corsHeaders, () => this.runSynchronization(env));
+    if (adminRes) {
+      return adminRes;
+    }
+
     if (url.pathname.startsWith('/api')) {
       return new Response('Not Found', { status: 404, headers: corsHeaders });
     }
@@ -82,9 +91,27 @@ export default {
   },
 
   async runSynchronization(env: Env) {
+    console.log("ECONOMIC_SYNC_STARTED");
+    const fundamentalProvider = new FreeEconomicCalendarProvider();
+    try {
+      const events = await fundamentalProvider.fetchUpcomingEvents('USD,EUR,GBP,JPY', 'today', 'tomorrow');
+      for (const ev of events) {
+        await env.DB.prepare(`
+          INSERT INTO economic_events (id, country, currency, event, timestamp, importance, estimate, previous, actual, source)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            actual = excluded.actual,
+            estimate = excluded.estimate,
+            updated_at = CURRENT_TIMESTAMP
+        `).bind(ev.id, ev.country, ev.currency, ev.event, ev.timestamp, ev.importance, ev.estimate, ev.previous, ev.actual, ev.source).run();
+      }
+      console.log("ECONOMIC_SYNC_COMPLETED");
+    } catch (error) {
+      console.log("ECONOMIC_SYNC_FAILED", error);
+    }
+
     console.log("MARKET_SYNC_STARTED");
     const marketProvider = new TwelveDataMarketProvider(env.TWELVEDATA_API_KEY || 'mock_key');
-    const fundamentalProvider = new FinnhubFundamentalProvider(env.FINNHUB_API_KEY || 'mock_key');
     
     const instruments = ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD'];
     const timeframes = ['5M', '1H'];
@@ -149,29 +176,19 @@ export default {
     } catch (error) {
       console.log("MARKET_SYNC_FAILED", error);
     }
-
-    console.log("ECONOMIC_SYNC_STARTED");
-    try {
-      const events = await fundamentalProvider.fetchUpcomingEvents('USD', 'today', 'tomorrow');
-      for (const ev of events) {
-        await env.DB.prepare(`
-          INSERT INTO economic_events (id, country, currency, event, timestamp, importance, estimate, previous, actual, source)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            actual = excluded.actual,
-            estimate = excluded.estimate,
-            updated_at = CURRENT_TIMESTAMP
-        `).bind(ev.id, ev.country, ev.currency, ev.event, ev.timestamp, ev.importance, ev.estimate, ev.previous, ev.actual, ev.source).run();
-      }
-      console.log("ECONOMIC_SYNC_COMPLETED");
-    } catch (error) {
-      console.log("ECONOMIC_SYNC_FAILED", error);
-    }
   },
 
   async runStrategyEngine(env: Env, instrument: string) {
     const stratId = 'AXNNA_V1_LIQUIDITY_FVG';
     const stratVer = 'technical-v1'; // Matched with new core engine strategy version
+
+    const strategyRow = await env.DB.prepare(
+      `SELECT active_status FROM strategies WHERE strategy_id = ?`
+    ).bind(stratId).first();
+    if (strategyRow && strategyRow.active_status && strategyRow.active_status !== 'ACTIVE') {
+      console.log(`STRATEGY_DISABLED: ${stratId} (${strategyRow.active_status})`);
+      return;
+    }
 
     const engine = new StrategyEngine({
       htfTimeframe: '1H',
@@ -229,6 +246,19 @@ export default {
        results.push(active as any);
     }
 
+    // Evaluate fundamental context once if any candidate is alert-eligible
+    let fundamentalContext: FundamentalContext | null = null;
+    const fundamentalEngine = new FundamentalEngine();
+    if (results.some(sig => sig.status === 'ALERT_ELIGIBLE')) {
+      const { results: economicEvents } = await env.DB.prepare(
+        `SELECT * FROM economic_events ORDER BY timestamp DESC LIMIT 100`
+      ).all();
+      fundamentalContext = fundamentalEngine.evaluateContext(
+        instrument,
+        (economicEvents as unknown as EconomicEvent[]) || []
+      );
+    }
+
     // Persist Results
     for (const sig of results) {
       // Safely serialize evidence payload
@@ -276,9 +306,132 @@ export default {
       ).run();
       
       console.log(`CANDIDATE_PROCESSED: ${instrument} ${sig.direction} (Setup: ${sig.setupId}) - Status: ${sig.status}`);
+
+      if (sig.status === 'ALERT_ELIGIBLE' && fundamentalContext) {
+        const confluence = fundamentalEngine.getConfluence(fundamentalContext, sig.direction);
+        await env.DB.prepare(`UPDATE signals SET market_context = ? WHERE signal_id = ?`)
+          .bind(JSON.stringify({ ...fundamentalContext, confluence }), sig.setupId)
+          .run();
+
+        if (confluence === 'HIGH EVENT RISK') {
+          console.log(`ALERT_SUPPRESSED_EVENT_RISK: ${instrument} ${sig.direction} (Setup: ${sig.setupId})`);
+        } else {
+          await deliverTelegramAlerts(env, sig, instrument, rr, fundamentalContext, confluence);
+        }
+      }
     }
   }
 };
+
+/**
+ * Formats and delivers an alert-eligible signal to connected Axnna users via Telegram,
+ * enforcing per-user idempotency via `notification_deliveries`.
+ */
+export async function deliverTelegramAlerts(
+  env: Env,
+  sig: CandidateSetup,
+  instrument: string,
+  rr: number | null,
+  context: FundamentalContext,
+  confluence: Confluence
+): Promise<number> {
+  if (!env.TELEGRAM_BOT_TOKEN) {
+    console.warn('TELEGRAM_DELIVERY_SKIPPED: TELEGRAM_BOT_TOKEN not configured');
+    return 0;
+  }
+
+  const globalToggle = await env.DB.prepare(
+    `SELECT value FROM system_config WHERE key = 'global_notifications_enabled'`
+  ).first();
+  if (globalToggle?.value === 'false') {
+    console.log('TELEGRAM_DELIVERY_PAUSED: global_notifications_enabled is false');
+    return 0;
+  }
+
+  const { results: users } = await env.DB.prepare(
+    `SELECT id, telegram_chat_id FROM axnna_users WHERE status = 'CONNECTED' AND signal_notifications_enabled = 1`
+  ).all();
+
+  if (!users || users.length === 0) return 0;
+
+  const text = [
+    `AXNNA SIGNAL: ${instrument} ${sig.direction}`,
+    `Score: ${sig.technicalScore ?? 0}/100 | Macro: ${confluence} (${context.macroRegime})`,
+    `Entry: ${sig.entryPrice ?? 'N/A'}`,
+    `Stop: ${sig.stopLossPrice ?? 'N/A'}`,
+    `Target: ${sig.structuralTargetPrice ?? 'N/A'}`,
+    `R:R: ${rr !== null ? rr.toFixed(2) : 'N/A'}`,
+    `Timeframe: 1H -> 5M`,
+    `Setup ID: ${sig.setupId}`,
+  ].join('\n');
+
+  let sentCount = 0;
+
+  for (const user of users as Array<{ id: string; telegram_chat_id: string }>) {
+    const existing = await env.DB.prepare(
+      `SELECT status FROM notification_deliveries WHERE signal_id = ? AND axnna_user_id = ? AND channel = 'TELEGRAM'`
+    ).bind(sig.setupId, user.id).first();
+
+    if (existing?.status === 'SENT') continue;
+
+    let delivered = false;
+    let providerMessageId: string | null = null;
+
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: user.telegram_chat_id,
+          text,
+        }),
+      });
+
+      if (res.ok) {
+        const body: any = await res.json().catch(() => null);
+        providerMessageId = body?.result?.message_id ? String(body.result.message_id) : null;
+        delivered = true;
+      } else {
+        console.error(`TELEGRAM_DELIVERY_FAILED: HTTP ${res.status} for user ${user.id}`);
+      }
+    } catch (err: any) {
+      console.error(`TELEGRAM_DELIVERY_ERROR: ${err.message} for user ${user.id}`);
+    }
+
+    const now = new Date().toISOString();
+    await env.DB.prepare(`
+      INSERT INTO notification_deliveries (
+        id, signal_id, axnna_user_id, channel, destination, status, provider_message_id, attempt_count, last_attempt_at, delivered_at
+      )
+      VALUES (?, ?, ?, 'TELEGRAM', ?, ?, ?, 1, ?, ?)
+      ON CONFLICT(signal_id, axnna_user_id, channel) DO UPDATE SET
+        status = excluded.status,
+        provider_message_id = excluded.provider_message_id,
+        attempt_count = notification_deliveries.attempt_count + 1,
+        last_attempt_at = excluded.last_attempt_at,
+        delivered_at = excluded.delivered_at
+    `).bind(
+      crypto.randomUUID(),
+      sig.setupId,
+      user.id,
+      user.telegram_chat_id,
+      delivered ? 'SENT' : 'FAILED',
+      providerMessageId,
+      now,
+      delivered ? now : null
+    ).run();
+
+    if (delivered) sentCount++;
+  }
+
+  if (sentCount > 0) {
+    await env.DB.prepare(`UPDATE signals SET status = 'ALERTED' WHERE signal_id = ?`)
+      .bind(sig.setupId)
+      .run();
+  }
+
+  return sentCount;
+}
 
 async function handleCreateSession(env: Env, headers: any): Promise<Response> {
   const token = crypto.randomUUID(); 

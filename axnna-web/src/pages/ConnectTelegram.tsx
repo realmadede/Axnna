@@ -47,7 +47,7 @@ export default function ConnectTelegram() {
         <>
           <p>Waiting for Telegram...</p>
           <a 
-            href={`https://t.me/AxnnaBot?start=${token}`} 
+            href={`https://t.me/AxnnaSignalsBot?start=${token}`} 
             target="_blank" 
             rel="noopener noreferrer"
             style={{
@@ -67,7 +67,7 @@ export default function ConnectTelegram() {
 
       {status === 'CONNECTED' && (
         <div>
-          <h2>Telegram Connected ✓</h2>
+          <h2>Telegram Connected</h2>
           <p>You are now an Axnna User. Signal notifications are active.</p>
         </div>
       )}

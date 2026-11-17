@@ -53,16 +53,21 @@ function Layout({ children }: { children: React.ReactNode }) {
     if (saved === 'light') {
       setIsLight(true);
       document.body.classList.add('light-mode');
+      document.documentElement.setAttribute('data-theme', 'light');
+    } else {
+      document.documentElement.setAttribute('data-theme', 'dark');
     }
   }, []);
 
   const toggleTheme = () => {
     if (isLight) {
       document.body.classList.remove('light-mode');
+      document.documentElement.setAttribute('data-theme', 'dark');
       localStorage.setItem('axnna_theme', 'dark');
       setIsLight(false);
     } else {
       document.body.classList.add('light-mode');
+      document.documentElement.setAttribute('data-theme', 'light');
       localStorage.setItem('axnna_theme', 'light');
       setIsLight(true);
     }
