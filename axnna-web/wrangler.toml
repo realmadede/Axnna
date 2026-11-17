@@ -56,7 +56,7 @@ ALLOWED_ORIGINS = "https://axnna.madede.workers.dev"
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "axnna_db_production"
-database_id = "REPLACE_WITH_PRODUCTION_D1_DATABASE_ID"
+database_id = "70a35528-d8e7-4e54-9e0e-763ea0a26ad1"
 migrations_dir = "./migrations"
 
 [env.production.triggers]
