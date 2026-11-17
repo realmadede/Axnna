@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Lock, LogOut, Play, RefreshCw, Search } from 'lucide-react';
-import { Button, Glass, Input, SegmentedControl, Switch } from 'glisse';
+import { Button, Glass, Input, SegmentedControl, Switch } from '../components/AdminUi';
 import { formatDisplayTime } from '../utils/time';
 
 interface MarketHealthRow {
@@ -362,6 +362,7 @@ export default function Config() {
 
   // Filters
   const [userSearch, setUserSearch] = useState('');
+  const [debouncedUserSearch, setDebouncedUserSearch] = useState('');
   const [userStatusFilter, setUserStatusFilter] = useState<'ALL' | 'CONNECTED' | 'DISCONNECTED'>('ALL');
   const [signalInstrumentFilter, setSignalInstrumentFilter] = useState<string>('ALL');
   const [paperInstrumentFilter, setPaperInstrumentFilter] = useState<string>('ALL');
@@ -371,6 +372,13 @@ export default function Config() {
   const [confirmPaperReset, setConfirmPaperReset] = useState<boolean>(false);
   const [securitySeverityFilter, setSecuritySeverityFilter] = useState<string>('ALL');
   const [securityResolutionFilter, setSecurityResolutionFilter] = useState<string>('ALL');
+
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setDebouncedUserSearch(userSearch.trim());
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [userSearch]);
 
   const fetchOverview = useCallback(async (daysOverride?: number, pageOverride?: number) => {
     setLoadingData(true);
@@ -384,7 +392,7 @@ export default function Config() {
         pageSize: String(pageSize),
         paperInstrument: paperInstrumentFilter,
         paperVersion: paperVersionFilter,
-        userSearch: userSearch.trim(),
+        userSearch: debouncedUserSearch,
         userStatus: userStatusFilter,
         signalInstrument: signalInstrumentFilter,
         securitySeverity: securitySeverityFilter,
@@ -413,7 +421,7 @@ export default function Config() {
     } finally {
       setLoadingData(false);
     }
-  }, [analyticsDays, page, paperInstrumentFilter, paperVersionFilter, userSearch, userStatusFilter, signalInstrumentFilter, securitySeverityFilter, securityResolutionFilter]);
+  }, [analyticsDays, page, paperInstrumentFilter, paperVersionFilter, debouncedUserSearch, userStatusFilter, signalInstrumentFilter, securitySeverityFilter, securityResolutionFilter]);
 
   useEffect(() => {
     fetch('/api/auth/config', { credentials: 'same-origin' })

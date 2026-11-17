@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Activity, RefreshCw } from 'lucide-react';
-import { Button, Glass } from 'glisse';
+import { Button, Glass } from '../components/AdminUi';
 import { formatDisplayTime } from '../utils/time';
 
 interface PublicSubsystem {

@@ -312,9 +312,201 @@ a:hover {
 }
 
 .admin-tabs-wrap {
-  overflow-x: auto;
   max-width: 100%;
-  padding-bottom: 0.25rem;
+}
+
+.admin-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.4rem;
+  border-radius: 14px;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+}
+
+.admin-tab-pill {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 0.82rem;
+  font-weight: 500;
+  padding: 0.45rem 0.85rem;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+  white-space: nowrap;
+}
+
+.admin-tab-pill:hover {
+  color: var(--text-color);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.light-mode .admin-tab-pill:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.admin-tab-pill.is-active {
+  background: var(--text-color);
+  color: var(--bg-color);
+  font-weight: 600;
+}
+
+.axnna-surface {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  transition: border-color 0.18s ease;
+}
+
+.axnna-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 38px;
+  padding: 0.5rem 0.95rem;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  transition: background-color 0.16s ease, border-color 0.16s ease, opacity 0.16s ease, transform 0.12s ease;
+}
+
+.axnna-btn:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.axnna-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.axnna-btn-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.axnna-btn--glass {
+  background: var(--card-bg);
+  color: var(--text-color);
+}
+
+.axnna-btn--glass:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.light-mode .axnna-btn--glass:hover:not(:disabled) {
+  border-color: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.axnna-btn--filled {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  color: #ffffff;
+}
+
+.axnna-btn--filled:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.axnna-btn--destructive {
+  color: var(--error-color);
+  border-color: rgba(255, 59, 48, 0.35);
+}
+
+.axnna-btn--destructive:hover:not(:disabled) {
+  background: rgba(255, 59, 48, 0.12);
+  border-color: rgba(255, 59, 48, 0.6);
+}
+
+.axnna-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.admin-filter-row .axnna-input-wrap {
+  width: auto;
+  min-width: 220px;
+  max-width: 320px;
+  flex: 1 1 220px;
+}
+
+.axnna-input-icon {
+  position: absolute;
+  left: 0.8rem;
+  color: var(--text-muted);
+  display: inline-flex;
+  pointer-events: none;
+}
+
+.axnna-input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0.5rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  color: var(--text-color);
+  font-family: inherit;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.16s ease;
+}
+
+.axnna-input.has-icon {
+  padding-left: 2.3rem;
+}
+
+.axnna-input:focus {
+  border-color: var(--accent-color);
+}
+
+.axnna-switch {
+  position: relative;
+  width: 44px;
+  height: 26px;
+  border-radius: 9999px;
+  border: 1px solid var(--border-color);
+  background: rgba(160, 160, 160, 0.25);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 0.18s ease, border-color 0.18s ease;
+}
+
+.axnna-switch.is-checked {
+  background: var(--success-color);
+  border-color: var(--success-color);
+}
+
+.axnna-switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.axnna-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  background: #ffffff;
+  transition: transform 0.18s ease;
+}
+
+.axnna-switch.is-checked .axnna-switch-thumb {
+  transform: translateX(18px);
 }
 
 .admin-panel {
