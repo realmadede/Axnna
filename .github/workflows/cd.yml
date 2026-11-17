@@ -39,8 +39,8 @@ jobs:
         run: |
           npm run typecheck
           npm run lint
-          npm test
           npm run build
+          npm test
 
       - name: Validate target environment D1 database ID
         env:
