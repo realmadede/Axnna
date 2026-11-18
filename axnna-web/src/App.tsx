@@ -4,11 +4,11 @@ import { Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
 import { AxnnaLogo } from './components/AxnnaLogo';
 import { trackAnalyticsEvent } from './utils/analytics';
 
+import Status from './pages/Status';
+
 const Landing = lazy(() => import('./pages/Landing'));
 const ConnectTelegram = lazy(() => import('./pages/ConnectTelegram'));
 const Strategies = lazy(() => import('./pages/Strategies'));
-const Config = lazy(() => import('./pages/Config'));
-const Status = lazy(() => import('./pages/Status'));
 const About = lazy(() => import('./pages/About'));
 const Contact = lazy(() => import('./pages/Contact'));
 const FAQ = lazy(() => import('./pages/FAQ'));
@@ -134,7 +134,6 @@ function Layout({ children }: { children: React.ReactNode }) {
           <h4>System</h4>
           <ul>
             <li><Link to="/status">Status</Link></li>
-            <li><Link to="/config">Config</Link></li>
           </ul>
         </div>
       </footer>
@@ -159,7 +158,6 @@ export default function App() {
         <Route path="/legal/:page" element={<div className="container" style={{paddingTop:'4rem'}}><Legal /></div>} />
         
         <Route path="/connect-telegram" element={<ConnectTelegram />} />
-        <Route path="/config/*" element={<div className="container" style={{paddingTop:'4rem'}}><Config /></div>} />
       </Routes>
     </Layout>
   );

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import worker, { Env, runDailyRecap } from '../src/worker';
+import worker, { Env, retryScheduledDeliveries, runDailyRecap } from '../src/worker';
 import { createSqliteD1 } from './helpers/sqliteD1';
 
 describe('Stage C Unified Routing, Telemetry, Operations & Missing Features', () => {
@@ -15,8 +15,6 @@ describe('Stage C Unified Routing, Telemetry, Operations & Missing Features', ()
       TELEGRAM_BOT_TOKEN: 'mock_bot_token',
       TELEGRAM_WEBHOOK_SECRET: 'mock_wh_secret_123',
       TWELVEDATA_API_KEY: 'mock_twelvedata_key',
-      ADMIN_PASSPHRASE: 'stage-c-admin-passphrase',
-      ADMIN_SESSION_SECRET: 'stage-c-hmac-signing-secret-32chars',
       ALLOWED_ORIGINS: 'https://staging.axnna.example',
     };
   });
@@ -25,23 +23,6 @@ describe('Stage C Unified Routing, Telemetry, Operations & Missing Features', ()
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
-
-  async function loginAdmin(): Promise<string> {
-    const res = await worker.fetch(
-      new Request('https://staging.axnna.example/api/auth/config', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Origin: 'https://staging.axnna.example',
-        },
-        body: JSON.stringify({ passphrase: 'stage-c-admin-passphrase' }),
-      }),
-      env
-    );
-    expect(res.status).toBe(200);
-    expect(res.headers.get('Set-Cookie')).toContain('SameSite=Strict');
-    return res.headers.get('Set-Cookie')!.split(';')[0];
-  }
 
   it('delegates non-API routes to ASSETS SPA binding and keeps unmatched /api/* returning JSON 404', async () => {
     const assetsFetch = vi.fn(async (req: Request) => {
@@ -165,27 +146,12 @@ describe('Stage C Unified Routing, Telemetry, Operations & Missing Features', ()
       .get() as any;
     expect(secRow).toEqual({ event_type: 'CONTACT_RATE_LIMITED', source_category: 'RATE_LIMIT' });
 
-    // Admin reviews submission status
-    const cookie = await loginAdmin();
-    const triage = await worker.fetch(
-      new Request(`https://staging.axnna.example/api/config/contact/${firstId}/status`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Cookie: cookie,
-          Origin: 'https://staging.axnna.example',
-          'X-Requested-With': 'AxnnaAdmin',
-        },
-        body: JSON.stringify({ status: 'REVIEWED' }),
-      }),
-      env
-    );
-    expect(triage.status).toBe(200);
-    const saved = sqlite.prepare(`SELECT status FROM contact_submissions WHERE id = ?`).get(firstId) as any;
-    expect(saved.status).toBe('REVIEWED');
+    // Persisted feedback row in D1
+    const saved = sqlite.prepare(`SELECT status, category FROM contact_submissions WHERE id = ?`).get(firstId) as any;
+    expect(saved).toMatchObject({ status: 'NEW', category: 'Bug Report' });
   });
 
-  it('ingests privacy-safe analytics events and serves admin-only multi-window aggregations + security resolution', async () => {
+  it('ingests privacy-safe analytics events and removes /api/signals & /api/config/* endpoints cleanly', async () => {
     const badAnalytics = await worker.fetch(
       new Request('https://staging.axnna.example/api/analytics/event', {
         method: 'POST',
@@ -251,52 +217,18 @@ describe('Stage C Unified Routing, Telemetry, Operations & Missing Features', ()
       env
     );
 
-    // Trigger an unauthorized request to verify security event recording
-    const unauthSignals = await worker.fetch(new Request('https://staging.axnna.example/api/signals'), env);
-    expect(unauthSignals.status).toBe(401);
+    // Removed /api/signals and /api/config/overview return 404 JSON
+    const removedSignals = await worker.fetch(new Request('https://staging.axnna.example/api/signals'), env);
+    expect(removedSignals.status).toBe(404);
 
-    // Overview blocked for unauthenticated callers
-    const unauthOverview = await worker.fetch(new Request('https://staging.axnna.example/api/config/overview?days=7'), env);
-    expect(unauthOverview.status).toBe(401);
+    const removedOverview = await worker.fetch(new Request('https://staging.axnna.example/api/config/overview?days=7'), env);
+    expect(removedOverview.status).toBe(404);
 
-    const cookie = await loginAdmin();
-    const overviewRes = await worker.fetch(
-      new Request('https://staging.axnna.example/api/config/overview?days=30', {
-        headers: { Cookie: cookie },
-      }),
-      env
-    );
-    expect(overviewRes.status).toBe(200);
-    const overview = (await overviewRes.json()) as any;
-
-    expect(overview.analytics.days).toBe(30);
-    expect(overview.analytics.summary.totalEvents).toBe(3);
-    expect(overview.analytics.summary.uniqueVisitors).toBe(2);
-    expect(overview.analytics.summary.pageViews).toBe(1);
-    expect(overview.analytics.devices[0]).toMatchObject({ device: 'mobile', count: 1 });
-    expect(overview.analytics.countries[0]).toMatchObject({ country: 'KE', count: 1 });
-    expect(overview.analytics.topReferrers[0]).toMatchObject({ source: 'search.example', visits: 1 });
-    expect(overview.systemConfig.secrets.find((s: any) => s.key === 'TELEGRAM_BOT_TOKEN')?.configured).toBe(true);
-    expect(JSON.stringify(overview)).not.toContain('mock_bot_token');
-
-    expect(overview.securityEvents.length).toBeGreaterThanOrEqual(1);
-    const secId = overview.securityEvents[0].id;
-    const resolveRes = await worker.fetch(
-      new Request(`https://staging.axnna.example/api/config/security/${secId}/resolve`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Cookie: cookie,
-          Origin: 'https://staging.axnna.example',
-          'X-Requested-With': 'AxnnaAdmin',
-        },
-        body: JSON.stringify({ resolutionStatus: 'RESOLVED' }),
-      }),
-      env
-    );
-    expect(resolveRes.status).toBe(200);
-    const resolvedRow = sqlite.prepare(`SELECT resolution_status FROM security_events WHERE id = ?`).get(secId) as any;
-    expect(resolvedRow.resolution_status).toBe('RESOLVED');
+    // Privacy-safe analytics & pairing completion persisted accurately
+    const events = sqlite.prepare(`SELECT event_type, device_category, country_code, referrer FROM analytics_events`).all() as any[];
+    expect(events).toHaveLength(3);
+    expect(events.some((e) => e.event_type === 'PAGE_VIEW' && e.device_category === 'mobile' && e.country_code === 'KE' && e.referrer === 'search.example')).toBe(true);
+    expect(events.some((e) => e.event_type === 'TELEGRAM_CONNECT_COMPLETED')).toBe(true);
   });
 
   it('tracks provider health for market + calendar providers and records scheduled_job_runs on sync', async () => {
@@ -406,20 +338,9 @@ describe('Stage C Unified Routing, Telemetry, Operations & Missing Features', ()
        ) VALUES ('del_retry_1', 'sig_retry_1', 'u_tg_1', 'TELEGRAM', '555111', 'RETRY_SCHEDULED', 1, 'HTTP 429')`
     ).run();
 
-    const cookie = await loginAdmin();
-    const retryRes = await worker.fetch(
-      new Request('https://staging.axnna.example/api/config/deliveries/del_retry_1/retry', {
-        method: 'POST',
-        headers: {
-          Cookie: cookie,
-          Origin: 'https://staging.axnna.example',
-          'X-Requested-With': 'AxnnaAdmin',
-        },
-      }),
-      env
-    );
-    expect(retryRes.status).toBe(200);
-    const retryJson = (await retryRes.json()) as any;
-    expect(retryJson).toMatchObject({ ok: true, status: 'SENT' });
+    const recovered = await retryScheduledDeliveries(env);
+    expect(recovered).toBe(1);
+    const delRow = sqlite.prepare(`SELECT status FROM notification_deliveries WHERE id = 'del_retry_1'`).get() as any;
+    expect(delRow.status).toBe('SENT');
   });
 });

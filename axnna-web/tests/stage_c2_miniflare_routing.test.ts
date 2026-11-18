@@ -41,8 +41,6 @@ describe('Stage C.2 Real Miniflare Worker + Static Assets & CD Guard Verificatio
         TWELVEDATA_API_KEY: 'test_td_key_1234',
         TELEGRAM_BOT_TOKEN: '123456:TEST_BOT_TOKEN',
         TELEGRAM_WEBHOOK_SECRET: 'test_wh_secret_1234',
-        ADMIN_PASSPHRASE: 'stage-c2-admin-passphrase',
-        ADMIN_SESSION_SECRET: 'stage-c2-hmac-signing-secret-32chars',
       },
       assets: {
         directory: distDir,

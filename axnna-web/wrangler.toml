@@ -22,7 +22,7 @@ database_id = "local-db-id"
 migrations_dir = "./migrations"
 
 [triggers]
-crons = ["*/5 * * * *", "0 21 * * *"]
+crons = ["*/15 * * * *", "2 * * * *", "0 21 * * *"]
 
 # ---------------------------------------------------------------------------
 # Staging Environment (Manual provisioning required in Stage D / pre-deploy)
@@ -41,7 +41,7 @@ database_id = "REPLACE_WITH_STAGING_D1_DATABASE_ID"
 migrations_dir = "./migrations"
 
 [env.staging.triggers]
-crons = ["*/5 * * * *", "0 21 * * *"]
+crons = ["*/15 * * * *", "2 * * * *", "0 21 * * *"]
 
 # ---------------------------------------------------------------------------
 # Production Environment (axnna.madede.workers.dev)
@@ -60,4 +60,4 @@ database_id = "70a35528-d8e7-4e54-9e0e-763ea0a26ad1"
 migrations_dir = "./migrations"
 
 [env.production.triggers]
-crons = ["*/5 * * * *", "0 21 * * *"]
+crons = ["*/15 * * * *", "2 * * * *", "0 21 * * *"]

@@ -24,8 +24,6 @@ describe('Stage D Risk Gate, Paper Trading Lifecycle, Security Boundaries & Stag
       TELEGRAM_BOT_TOKEN: '123456:STAGING_BOT_TOKEN',
       TELEGRAM_WEBHOOK_SECRET: 'staging_webhook_secret_token_32ch',
       TWELVEDATA_API_KEY: 'staging_twelvedata_key',
-      ADMIN_PASSPHRASE: 'stage-d-admin-passphrase',
-      ADMIN_SESSION_SECRET: 'stage-d-hmac-signing-secret-32chars',
       ACTOR_HASH_SECRET: 'stage-d-actor-hash-secret-32chars',
       ALLOWED_ORIGINS: 'https://axnna-staging.madede.workers.dev',
     };
@@ -312,40 +310,11 @@ describe('Stage D Risk Gate, Paper Trading Lifecycle, Security Boundaries & Stag
     const paperRow = sqlite.prepare(`SELECT status, strategy_version FROM paper_trades WHERE signal_id = 'sim_eurusd_1'`).get() as any;
     expect(paperRow).toEqual({ status: 'PENDING_ENTRY', strategy_version: 'technical-v1' });
 
-    // Admin overview surfaces real simulation portfolio + health + updates account config
-    const loginRes = await worker.fetch(
-      new Request('https://axnna-staging.madede.workers.dev/api/auth/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Origin: 'https://axnna-staging.madede.workers.dev' },
-        body: JSON.stringify({ passphrase: 'stage-d-admin-passphrase' }),
-      }),
-      env
-    );
-    const cookie = loginRes.headers.get('Set-Cookie')!.split(';')[0];
-
-    const ovRes = await worker.fetch(
-      new Request('https://axnna-staging.madede.workers.dev/api/config/overview?days=7', { headers: { Cookie: cookie } }),
-      env
-    );
-    const ov = (await ovRes.json()) as any;
-    expect(ov.paperTrading.mode).toBe('SIMULATION_ONLY');
-    expect(ov.paperTrading.summary.pendingPositions).toBe(1);
-    expect(ov.totals.riskApprovedTotal).toBe(1);
-
-    const cfgPaperRes = await worker.fetch(
-      new Request('https://axnna-staging.madede.workers.dev/api/config/paper/account', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Cookie: cookie,
-          Origin: 'https://axnna-staging.madede.workers.dev',
-          'X-Requested-With': 'AxnnaAdmin',
-        },
-        body: JSON.stringify({ startingBalance: 25000, riskPerTradePercent: 0.5, resetAccount: false }),
-      }),
-      env
-    );
-    expect(cfgPaperRes.status).toBe(200);
+    // Simulation portfolio reflects real paper trade state directly in D1
+    const ov = await getPaperPortfolioOverview(env.DB);
+    expect(ov.mode).toBe('SIMULATION_ONLY');
+    expect(ov.summary.pendingPositions).toBe(1);
+    expect((sqlite.prepare(`SELECT COUNT(*) as c FROM risk_decisions WHERE decision = 'APPROVED'`).get() as any).c).toBe(1);
     spyEngine.mockRestore();
   });
 
@@ -423,32 +392,31 @@ describe('Stage D Risk Gate, Paper Trading Lifecycle, Security Boundaries & Stag
     spyEngine.mockRestore();
   });
 
-  it('Security boundary verification: rejects malformed cookies, wrong HTTP methods, encoded path traversals, and SQL injection attempts', async () => {
-    // Malformed / forged cookie rejected
-    const badCookie = await worker.fetch(
+  it('Security boundary verification: rejects removed admin routes, encoded path traversals, and SQL injection attempts', async () => {
+    // Removed /api/config/* and /api/auth/config routes cleanly return 404 JSON
+    const removedOverview = await worker.fetch(
       new Request('https://axnna-staging.madede.workers.dev/api/config/overview', {
         headers: { Cookie: 'axnna_admin_session=forged.signature' },
       }),
       env
     );
-    expect(badCookie.status).toBe(401);
+    expect(removedOverview.status).toBe(404);
 
-    // Wrong HTTP method on /api/config/overview and /api/auth/config -> not 200
-    const deleteMethod = await worker.fetch(
-      new Request('https://axnna-staging.madede.workers.dev/api/config/overview', {
-        method: 'DELETE',
-        headers: { Origin: 'https://axnna-staging.madede.workers.dev', 'X-Requested-With': 'AxnnaAdmin' },
+    const removedAuth = await worker.fetch(
+      new Request('https://axnna-staging.madede.workers.dev/api/auth/config', {
+        method: 'POST',
+        headers: { Origin: 'https://axnna-staging.madede.workers.dev' },
       }),
       env
     );
-    expect(deleteMethod.status).toBe(401);
+    expect(removedAuth.status).toBe(404);
 
-    // Encoded /api/%2e%2e path returns 404 JSON, never admin leak
+    // Encoded /api/%2e%2e path returns 404 JSON
     const encodedApi = await worker.fetch(
       new Request('https://axnna-staging.madede.workers.dev/api/config/%2e%2e/overview'),
       env
     );
-    expect([401, 404]).toContain(encodedApi.status);
+    expect(encodedApi.status).toBe(404);
 
     // SQL injection payload in feedback does not execute SQL or crash
     const sqliRes = await worker.fetch(

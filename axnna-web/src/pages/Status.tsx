@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Activity, RefreshCw } from 'lucide-react';
-import { Button, Glass } from '../components/AdminUi';
 import { formatDisplayTime } from '../utils/time';
 
 interface PublicSubsystem {
@@ -51,7 +50,7 @@ export default function Status() {
   }, [loadStatus]);
 
   return (
-    <div style={{ maxWidth: '860px', margin: '0 auto', paddingBottom: '4rem', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+    <div style={{ maxWidth: '860px', margin: '0 auto', paddingBottom: '4rem', minHeight: '620px', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
       <div className="admin-header">
         <div>
           <h1 style={{ fontSize: '2.25rem', fontWeight: 700, letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
@@ -61,16 +60,44 @@ export default function Status() {
             High-level operational availability for Axnna services and monitored instruments.
           </p>
         </div>
-        <Button variant="glass" icon={<RefreshCw size={15} />} onClick={loadStatus} disabled={loading}>
-          {loading ? 'Checking...' : 'Refresh'}
-        </Button>
+        <button
+          type="button"
+          className="status-refresh-btn"
+          onClick={loadStatus}
+          disabled={loading}
+        >
+          <RefreshCw size={15} className={loading ? 'status-spin' : undefined} />
+          <span>{loading ? 'Checking...' : 'Refresh'}</span>
+        </button>
       </div>
 
       {error && <div className="admin-alert admin-alert--err">{error}</div>}
 
+      {!data && !error && (
+        <>
+          <div className="axnna-surface status-card status-skeleton-card" aria-hidden="true">
+            <div className="status-skeleton-line" style={{ width: '140px', height: '14px' }} />
+            <div className="status-skeleton-line" style={{ width: '210px', height: '24px' }} />
+            <div className="status-skeleton-line" style={{ width: '320px', height: '13px' }} />
+          </div>
+          <div className="axnna-surface status-card status-skeleton-card" aria-hidden="true">
+            <div className="status-skeleton-line" style={{ width: '120px', height: '18px' }} />
+            <div className="status-skeleton-list">
+              {Array.from({ length: 6 }).map((_, idx) => (
+                <div key={idx} className="status-skeleton-row">
+                  <div className="status-skeleton-line" style={{ width: '42%', height: '14px' }} />
+                  <div className="status-skeleton-line" style={{ width: '82px', height: '22px', borderRadius: '9999px' }} />
+                  <div className="status-skeleton-line" style={{ width: '28%', height: '14px' }} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
       {data && (
         <>
-          <Glass className="admin-panel">
+          <div className="axnna-surface status-card">
             <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
               <div>
                 <div className="admin-kpi-label">Overall Status</div>
@@ -81,33 +108,22 @@ export default function Status() {
             <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
               Monitored instruments: {data.monitoredInstruments.join(', ')} | Checked: {formatTime(data.checkedAt)}
             </div>
-          </Glass>
+          </div>
 
-          <Glass className="admin-panel">
+          <div className="axnna-surface status-card">
             <h2 style={{ fontSize: '1.1rem', fontWeight: 600 }}>Subsystems</h2>
-            <div className="admin-table-wrap">
-              <table className="admin-table">
-                <thead>
-                  <tr>
-                    <th>Subsystem</th>
-                    <th>Status</th>
-                    <th>Last Updated</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.subsystems.map((sub) => (
-                    <tr key={sub.name}>
-                      <td data-label="Subsystem">{sub.name}</td>
-                      <td data-label="Status">
-                        <span className={statusBadge(sub.status)}>{sub.status}</span>
-                      </td>
-                      <td data-label="Last Updated">{formatTime(sub.lastUpdated)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="status-list">
+              {data.subsystems.map((sub) => (
+                <div key={sub.name} className="status-row">
+                  <div className="status-row-name">{sub.name}</div>
+                  <div className="status-row-meta">
+                    <span className={statusBadge(sub.status)}>{sub.status}</span>
+                    <span className="status-row-time">{formatTime(sub.lastUpdated)}</span>
+                  </div>
+                </div>
+              ))}
             </div>
-          </Glass>
+          </div>
         </>
       )}
     </div>

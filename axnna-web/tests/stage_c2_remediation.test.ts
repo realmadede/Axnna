@@ -24,8 +24,6 @@ describe('Stage C.2 Audit Remediation Regression Suite', () => {
       TELEGRAM_BOT_TOKEN: '123456:TEST_BOT_TOKEN_REAL',
       TELEGRAM_WEBHOOK_SECRET: 'mock_wh_secret_12345678',
       TWELVEDATA_API_KEY: 'mock_twelvedata_key_real',
-      ADMIN_PASSPHRASE: 'stage-c2-admin-passphrase',
-      ADMIN_SESSION_SECRET: 'stage-c2-hmac-signing-secret-32chars',
       ACTOR_HASH_SECRET: 'separate-actor-hmac-key-32-characters',
       ALLOWED_ORIGINS: 'https://staging.axnna.example',
     };
@@ -35,22 +33,6 @@ describe('Stage C.2 Audit Remediation Regression Suite', () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
-
-  async function loginAdmin(): Promise<string> {
-    const res = await worker.fetch(
-      new Request('https://staging.axnna.example/api/auth/config', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Origin: 'https://staging.axnna.example',
-        },
-        body: JSON.stringify({ passphrase: 'stage-c2-admin-passphrase' }),
-      }),
-      env
-    );
-    expect(res.status).toBe(200);
-    return res.headers.get('Set-Cookie')!.split(';')[0];
-  }
 
   it('FND-01 & FND-10: enforces analytics 4KB body limit, conversion isolation, visitor inflation cap, rate limit, and bounded retention', async () => {
     // 1. Oversized body (>4KB) rejected with 413
@@ -181,44 +163,15 @@ describe('Stage C.2 Audit Remediation Regression Suite', () => {
       ).run(`rej_${String(i).padStart(2, '0')}`, `2026-11-17T10:${String(i).padStart(2, '0')}:00Z`);
     }
 
-    const cookie = await loginAdmin();
-    const p1Res = await worker.fetch(
-      new Request('https://staging.axnna.example/api/config/overview?days=7&page=1&pageSize=25', {
-        headers: { Cookie: cookie },
-      }),
-      env
-    );
-    expect(p1Res.status).toBe(200);
-    const p1 = (await p1Res.json()) as any;
-    expect(p1.totals.signalsTotal).toBe(58);
-    expect(p1.totals.paperTradesTotal).toBe(3);
-    expect(p1.signals.length).toBe(25);
-    expect(p1.paperTrading.trades.length).toBe(3);
+    // Verify true counts in D1 and removed /api/config/* returns 404
+    expect((sqlite.prepare(`SELECT COUNT(*) as c FROM signals`).get() as any).c).toBe(58);
+    expect((sqlite.prepare(`SELECT COUNT(*) as c FROM paper_trades`).get() as any).c).toBe(3);
 
-    const p3Res = await worker.fetch(
-      new Request('https://staging.axnna.example/api/config/overview?days=7&page=3&pageSize=25', {
-        headers: { Cookie: cookie },
-      }),
+    const removedOverview = await worker.fetch(
+      new Request('https://staging.axnna.example/api/config/overview?days=7&page=1&pageSize=25'),
       env
     );
-    const p3 = (await p3Res.json()) as any;
-    expect(p3.signals.length).toBe(8);
-
-    // Nonexistent mutation target returns 404
-    const notFoundSec = await worker.fetch(
-      new Request('https://staging.axnna.example/api/config/security/does-not-exist/resolve', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Cookie: cookie,
-          Origin: 'https://staging.axnna.example',
-          'X-Requested-With': 'AxnnaAdmin',
-        },
-        body: JSON.stringify({ resolutionStatus: 'RESOLVED' }),
-      }),
-      env
-    );
-    expect(notFoundSec.status).toBe(404);
+    expect(removedOverview.status).toBe(404);
   });
 
   it('FND-03: normalizes SQLite CURRENT_TIMESTAMP and ISO timestamps identically across UTC and Africa/Dar_es_Salaam', async () => {
@@ -310,37 +263,16 @@ describe('Stage C.2 Audit Remediation Regression Suite', () => {
     expect(await releaseSyncLease(env.DB, 'owner-2')).toBe(false);
     expect(await releaseSyncLease(env.DB, 'owner-1')).toBe(true);
 
-    // 2. Manual sync returns 409 when lease held, 502 when sync fails
+    // 2. Sync respects active lease and reports FAILED when API key is placeholder
     await acquireSyncLease(env.DB, 'active-cron', 60_000);
-    const cookie = await loginAdmin();
-    const conflictRes = await worker.fetch(
-      new Request('https://staging.axnna.example/api/config/sync', {
-        method: 'POST',
-        headers: {
-          Cookie: cookie,
-          Origin: 'https://staging.axnna.example',
-          'X-Requested-With': 'AxnnaAdmin',
-        },
-      }),
-      env
-    );
-    expect(conflictRes.status).toBe(409);
+    const conflictSync = await worker.runSynchronization(env, 'MANUAL_SYNC');
+    expect(conflictSync.status).toBe('ALREADY_RUNNING');
     await releaseSyncLease(env.DB, 'active-cron');
 
     const failSyncEnv: Env = { ...env, TWELVEDATA_API_KEY: 'your_twelvedata_key_here' };
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('[]', { status: 200 })));
-    const failRes = await worker.fetch(
-      new Request('https://staging.axnna.example/api/config/sync', {
-        method: 'POST',
-        headers: {
-          Cookie: cookie,
-          Origin: 'https://staging.axnna.example',
-          'X-Requested-With': 'AxnnaAdmin',
-        },
-      }),
-      failSyncEnv
-    );
-    expect(failRes.status).toBe(502);
+    const failSync = await worker.runSynchronization(failSyncEnv, 'MANUAL_SYNC');
+    expect(failSync.status).toBe('FAILED');
 
     // 3. Provider health state machine: DEGRADED -> FAILED -> HEALTHY -> DEGRADED
     await recordProviderHealth(env.DB, 'biquote', 'ECONOMIC_CALENDAR', 'DEGRADED');
@@ -367,50 +299,29 @@ describe('Stage C.2 Audit Remediation Regression Suite', () => {
     sqlite.prepare(`INSERT INTO scheduled_job_runs (id, job_name, status, started_at) VALUES ('orphan_1', 'CRON_SYNC', 'STARTED', ?)`).run(
       new Date(Date.now() - 20 * 60 * 1000).toISOString()
     );
-    sqlite.prepare(`DELETE FROM audit_events`).run();
-    const sysHealthEmptyAudit = await evaluateSystemHealth(env);
-    expect(sysHealthEmptyAudit.subsystems.find((s) => s.name.includes('Telegram'))?.status).toBe('DEGRADED');
-    expect(sysHealthEmptyAudit.subsystems.find((s) => s.name.includes('Scheduled Jobs'))?.status).toBe('DEGRADED');
-    expect(sysHealthEmptyAudit.subsystems.find((s) => s.name.includes('Application'))?.lastUpdated).toBeNull();
-
-    sqlite.prepare(`INSERT INTO audit_events (event_id, event_type, timestamp, actor_source) VALUES ('aud_fixed', 'ADMIN_LOGIN_SUCCESS', '2026-11-10 08:00:00', 'ADMIN_CONFIG')`).run();
-    const sysHealthWithAudit = await evaluateSystemHealth(env);
-    expect(sysHealthWithAudit.subsystems.find((s) => s.name.includes('Application'))?.lastUpdated).toBe('2026-11-10T08:00:00.000Z');
+    const sysHealth = await evaluateSystemHealth(env);
+    expect(sysHealth.subsystems.find((s) => s.name.includes('Telegram'))?.status).toBe('DEGRADED');
+    expect(sysHealth.subsystems.find((s) => s.name.includes('Scheduled Jobs'))?.status).toBe('DEGRADED');
+    expect(sysHealth.subsystems.find((s) => s.name.includes('Application'))).toBeUndefined();
   });
 
-  it('FND-08, FND-12, FND-14, FND-15, FND-16: domain-separated HMAC actor hashes, /api vs /apiary routing, bot commands, contact size/dedup, placeholder secret check', async () => {
-    // 1. Domain separation + non-raw IP in admin_login_attempts
+  it('FND-08, FND-12, FND-14 & FND-15: domain-separated HMAC actor hashes, /api vs /apiary routing, bot commands & contact size/dedup', async () => {
+    // 1. Domain separation + non-raw IP actor hashing
     const hAdmin = await computeHmacActorHash('198.51.100.10', 'admin_auth', env);
     const hFeedback = await computeHmacActorHash('198.51.100.10', 'feedback', env);
     expect(hAdmin).not.toBe(hFeedback);
     expect(hAdmin.length).toBe(32);
 
-    await worker.fetch(
-      new Request('https://staging.axnna.example/api/auth/config', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Origin: 'https://staging.axnna.example',
-          'CF-Connecting-IP': '198.51.100.10',
-        },
-        body: JSON.stringify({ passphrase: 'wrong-passphrase-attempt' }),
-      }),
-      env
-    );
-    const loginRows = sqlite.prepare(`SELECT client_key FROM admin_login_attempts`).all() as any[];
-    expect(loginRows[0].client_key).toBe(hAdmin);
-    expect(loginRows[0].client_key).not.toContain('198.51.100.10');
-
-    // 2. Placeholder & weak session secret rejected (503)
-    const weakRes = await worker.fetch(
+    // Removed /api/auth/config returns 404
+    const removedAuthRes = await worker.fetch(
       new Request('https://staging.axnna.example/api/auth/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Origin: 'https://staging.axnna.example' },
-        body: JSON.stringify({ passphrase: 'your_admin_passphrase' }),
+        body: JSON.stringify({ passphrase: 'any' }),
       }),
-      { ...env, ADMIN_PASSPHRASE: 'your_admin_passphrase', ADMIN_SESSION_SECRET: 'short' }
+      env
     );
-    expect(weakRes.status).toBe(503);
+    expect(removedAuthRes.status).toBe(404);
 
     // 3. /apiary goes to ASSETS (200), /api and /api/foo go to Worker JSON 404
     const assetsSpy = vi.fn(async () => new Response('SPA /apiary OK', { status: 200 }));

@@ -1,5 +1,5 @@
 import type { Env } from '../worker';
-import { normalizeUtcIso, parseUtcTimestampMs, toSqliteUtcTimestamp } from '../utils/time';
+import { getMostRecentFxSessionCloseMs, isFxMarketClosedUtc, normalizeUtcIso, parseUtcTimestampMs, toSqliteUtcTimestamp } from '../utils/time';
 
 export type HealthStatus = 'HEALTHY' | 'DEGRADED' | 'UNAVAILABLE' | 'MISCONFIGURED' | 'UNKNOWN';
 export type SecuritySeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
@@ -64,7 +64,6 @@ export function extractClientIp(request: Request, env?: Pick<Env, 'ENVIRONMENT'>
 function getActorSigningMaterial(env?: Partial<Env>): string {
   const candidate =
     env?.ACTOR_HASH_SECRET?.trim() ||
-    env?.ADMIN_SESSION_SECRET?.trim() ||
     env?.TELEGRAM_WEBHOOK_SECRET?.trim() ||
     env?.TWELVEDATA_API_KEY?.trim();
   if (candidate && candidate.length >= 8) {
@@ -366,7 +365,7 @@ export async function checkD1RateLimit(
 export async function pruneOperationalTables(
   db: D1Database,
   nowMs: number = Date.now()
-): Promise<{ analyticsDeleted: number; jobsDeleted: number; securityDeleted: number; rateLimitsDeleted: number; economicEventsDeleted: number }> {
+): Promise<{ analyticsDeleted: number; jobsDeleted: number; securityDeleted: number; rateLimitsDeleted: number; economicEventsDeleted: number; marketCandlesDeleted: number }> {
   const cutoff90dSql = toSqliteUtcTimestamp(nowMs - 90 * 24 * 60 * 60 * 1000);
   const cutoff90dIso = new Date(nowMs - 90 * 24 * 60 * 60 * 1000).toISOString();
   const cutoff180dSql = toSqliteUtcTimestamp(nowMs - 180 * 24 * 60 * 60 * 1000);
@@ -378,6 +377,7 @@ export async function pruneOperationalTables(
   let securityDeleted = 0;
   let rateLimitsDeleted = 0;
   let economicEventsDeleted = 0;
+  let marketCandlesDeleted = 0;
 
   try {
     const r1 = await db
@@ -452,7 +452,21 @@ export async function pruneOperationalTables(
     // Ignore table errors
   }
 
-  return { analyticsDeleted, jobsDeleted, securityDeleted, rateLimitsDeleted, economicEventsDeleted };
+  try {
+    const r6 = await db
+      .prepare(
+        `DELETE FROM market_candles WHERE id IN (
+           SELECT id FROM market_candles WHERE timestamp < ? LIMIT 500
+         )`
+      )
+      .bind(cutoff90dIso)
+      .run();
+    marketCandlesDeleted = Number((r6 as any)?.meta?.changes ?? 0);
+  } catch {
+    // Ignore table errors
+  }
+
+  return { analyticsDeleted, jobsDeleted, securityDeleted, rateLimitsDeleted, economicEventsDeleted, marketCandlesDeleted };
 }
 
 export function classifyUserAgent(ua: string | null): {
@@ -485,8 +499,6 @@ export function getSecretStatus(env: Env): Array<{ key: string; configured: bool
     { key: 'TWELVEDATA_API_KEY', configured: hasRealSecret(env.TWELVEDATA_API_KEY), scope: 'Market Data Ingestion' },
     { key: 'TELEGRAM_BOT_TOKEN', configured: hasRealSecret(env.TELEGRAM_BOT_TOKEN), scope: 'Telegram Bot API Delivery' },
     { key: 'TELEGRAM_WEBHOOK_SECRET', configured: hasRealSecret(env.TELEGRAM_WEBHOOK_SECRET), scope: 'Telegram Webhook Auth' },
-    { key: 'ADMIN_PASSPHRASE', configured: hasRealSecret(env.ADMIN_PASSPHRASE, 8), scope: 'Admin Console Login' },
-    { key: 'ADMIN_SESSION_SECRET', configured: hasRealSecret(env.ADMIN_SESSION_SECRET, 32), scope: 'Admin Cookie Signing' },
     { key: 'BACKTEST_SECRET', configured: hasRealSecret(env.BACKTEST_SECRET), scope: 'Dev Backtest Endpoint' },
     { key: 'ALLOWED_ORIGINS', configured: Boolean(env.ALLOWED_ORIGINS?.trim()), scope: 'CORS Allowlist' },
   ];
@@ -545,10 +557,41 @@ export async function evaluateSystemHealth(env: Env): Promise<{
     return { overallStatus: 'UNAVAILABLE', subsystems, recentJobs: [] };
   }
 
-  // 2. Market data health (normalized UTC comparison)
-  const { results: marketRows } = await env.DB.prepare(
-    `SELECT status, last_successful_fetch, error_count FROM market_data_state`
-  ).all() as { results: Array<{ status: string; last_successful_fetch: string | null; error_count: number }> };
+  // Run independent health queries in parallel to keep /status fast
+  const [
+    marketRes,
+    calHealth,
+    stratState,
+    activeStrat,
+    deliveriesRes,
+    jobsRes,
+    latestRecap,
+  ] = await Promise.all([
+    env.DB.prepare(`SELECT status, last_successful_fetch, error_count FROM market_data_state`).all(),
+    env.DB.prepare(
+      `SELECT status, last_successful_sync, last_failure, error_count FROM provider_health_state WHERE service_type = 'ECONOMIC_CALENDAR' LIMIT 1`
+    ).first() as Promise<{ status?: string; last_successful_sync?: string | null; last_failure?: string | null; error_count?: number } | null>,
+    env.DB.prepare(`SELECT MAX(updated_at) as last_run, COUNT(*) as tracked_pairs FROM strategy_state`).first() as Promise<{ last_run?: string | null; tracked_pairs?: number } | null>,
+    env.DB.prepare(`SELECT active_status FROM strategies WHERE strategy_id = 'AXNNA_V1_LIQUIDITY_FVG'`).first() as Promise<{ active_status?: string } | null>,
+    env.DB.prepare(
+      `SELECT status, COALESCE(delivered_at, last_attempt_at, created_at) as event_ts
+       FROM notification_deliveries
+       ORDER BY COALESCE(last_attempt_at, created_at) DESC
+       LIMIT 20`
+    ).all(),
+    env.DB.prepare(
+      `SELECT id, job_name, status, started_at, finished_at, duration_ms, summary, error_message
+       FROM scheduled_job_runs
+       ORDER BY started_at DESC
+       LIMIT 15`
+    ).all(),
+    env.DB.prepare(
+      `SELECT status, started_at, summary FROM scheduled_job_runs WHERE job_name = 'DAILY_RECAP' ORDER BY started_at DESC LIMIT 1`
+    ).first().catch(() => null) as Promise<{ status?: string; started_at?: string; summary?: string } | null>,
+  ]);
+
+  // 2. Market data health (normalized UTC comparison + FX weekend awareness)
+  const marketRows = (marketRes.results || []) as Array<{ status: string; last_successful_fetch: string | null; error_count: number }>;
 
   let marketStatus: HealthStatus = 'UNKNOWN';
   let marketDetail = 'No synchronization runs recorded yet';
@@ -557,7 +600,7 @@ export async function evaluateSystemHealth(env: Env): Promise<{
   if (!secretMap.TWELVEDATA_API_KEY) {
     marketStatus = 'MISCONFIGURED';
     marketDetail = 'TWELVEDATA_API_KEY is not configured';
-  } else if (marketRows && marketRows.length > 0) {
+  } else if (marketRows.length > 0) {
     const failed = marketRows.filter((r) => r.status === 'FAILED').length;
     const degraded = marketRows.filter((r) => r.status === 'DEGRADED').length;
     const timestamps = marketRows
@@ -565,7 +608,10 @@ export async function evaluateSystemHealth(env: Env): Promise<{
       .filter((t): t is number => t !== null && t > 0);
     const maxTs = timestamps.length > 0 ? Math.max(...timestamps) : 0;
     latestMarketFetch = maxTs > 0 ? new Date(maxTs).toISOString() : null;
-    const stale = maxTs > 0 && nowMs - maxTs > 30 * 60 * 1000;
+    const weekendClosedRecent =
+      isFxMarketClosedUtc(nowMs) &&
+      maxTs >= getMostRecentFxSessionCloseMs(nowMs) - 35 * 60 * 1000;
+    const stale = maxTs > 0 && nowMs - maxTs > 35 * 60 * 1000 && !weekendClosedRecent;
 
     if (failed === marketRows.length) {
       marketStatus = 'UNAVAILABLE';
@@ -573,7 +619,7 @@ export async function evaluateSystemHealth(env: Env): Promise<{
     } else if (failed > 0 || degraded > 0 || stale) {
       marketStatus = 'DEGRADED';
       marketDetail = stale
-        ? 'Market data is stale (>30m since last fetch)'
+        ? 'Market data is stale (>35m since last fetch)'
         : `${failed + degraded}/${marketRows.length} feeds failing/degraded`;
     } else {
       marketStatus = 'HEALTHY';
@@ -588,10 +634,6 @@ export async function evaluateSystemHealth(env: Env): Promise<{
   });
 
   // 3. Economic Calendar health (provider status + 2h staleness check)
-  const calHealth = await env.DB.prepare(
-    `SELECT status, last_successful_sync, last_failure, error_count FROM provider_health_state WHERE service_type = 'ECONOMIC_CALENDAR' LIMIT 1`
-  ).first() as { status?: string; last_successful_sync?: string | null; last_failure?: string | null; error_count?: number } | null;
-
   let calStatus: HealthStatus = 'UNKNOWN';
   let calDetail = 'No economic calendar sync recorded yet';
   const calLastSuccessMs = parseUtcTimestampMs(calHealth?.last_successful_sync);
@@ -619,13 +661,6 @@ export async function evaluateSystemHealth(env: Env): Promise<{
   });
 
   // 4. Strategy Engine health
-  const stratState = await env.DB.prepare(
-    `SELECT MAX(updated_at) as last_run, COUNT(*) as tracked_pairs FROM strategy_state`
-  ).first() as { last_run?: string | null; tracked_pairs?: number } | null;
-  const activeStrat = await env.DB.prepare(
-    `SELECT active_status FROM strategies WHERE strategy_id = 'AXNNA_V1_LIQUIDITY_FVG'`
-  ).first() as { active_status?: string } | null;
-
   const stratCount = Number(stratState?.tracked_pairs ?? 0);
   subsystems.push({
     name: 'Strategy Engine',
@@ -640,18 +675,13 @@ export async function evaluateSystemHealth(env: Env): Promise<{
   });
 
   // 5. Telegram health evaluated over recent 20 deliveries window
-  const { results: recentDeliveries } = await env.DB.prepare(
-    `SELECT status, COALESCE(delivered_at, last_attempt_at, created_at) as event_ts
-     FROM notification_deliveries
-     ORDER BY COALESCE(last_attempt_at, created_at) DESC
-     LIMIT 20`
-  ).all() as { results: Array<{ status: string; event_ts: string | null }> };
+  const recentDeliveries = (deliveriesRes.results || []) as Array<{ status: string; event_ts: string | null }>;
 
-  const recentTotal = recentDeliveries?.length ?? 0;
-  const recentSent = recentDeliveries?.filter((d) => d.status === 'SENT').length ?? 0;
+  const recentTotal = recentDeliveries.length;
+  const recentSent = recentDeliveries.filter((d) => d.status === 'SENT').length;
   const recentFailures =
-    recentDeliveries?.filter((d) => ['RETRY_SCHEDULED', 'EXHAUSTED', 'PERMANENT_FAILURE', 'FAILED'].includes(d.status)).length ?? 0;
-  const latestDeliveryTs = recentDeliveries?.[0]?.event_ts || null;
+    recentDeliveries.filter((d) => ['RETRY_SCHEDULED', 'EXHAUSTED', 'PERMANENT_FAILURE', 'FAILED'].includes(d.status)).length;
+  const latestDeliveryTs = recentDeliveries[0]?.event_ts || null;
 
   let tgStatus: HealthStatus = 'HEALTHY';
   let tgDetail = 'Bot token and webhook secret configured';
@@ -671,18 +701,13 @@ export async function evaluateSystemHealth(env: Env): Promise<{
     lastUpdated: normalizeUtcIso(latestDeliveryTs),
   });
 
-  // 6. Scheduled jobs health (handles STARTED orphans and stale CRON >20m)
-  const { results: recentJobs } = await env.DB.prepare(
-    `SELECT id, job_name, status, started_at, finished_at, duration_ms, summary, error_message
-     FROM scheduled_job_runs
-     ORDER BY started_at DESC
-     LIMIT 15`
-  ).all();
+  // 6. Scheduled jobs health (handles STARTED orphans and stale CRON >35m under */15 schedule)
+  const recentJobs = jobsRes.results || [];
 
   let jobStatus: HealthStatus = 'UNKNOWN';
   let jobDetail = 'No scheduled runs recorded yet';
   let lastJobTime: string | null = null;
-  if (recentJobs && recentJobs.length > 0) {
+  if (recentJobs.length > 0) {
     const latest = recentJobs[0] as any;
     const latestStartMs = parseUtcTimestampMs(latest.started_at);
     const latestFinishMs = parseUtcTimestampMs(latest.finished_at);
@@ -703,9 +728,13 @@ export async function evaluateSystemHealth(env: Env): Promise<{
     } else if (latest.status === 'DEGRADED') {
       jobStatus = 'DEGRADED';
       jobDetail = `Latest ${latest.job_name} completed with partial failures`;
-    } else if (latestFinishMs !== null && nowMs - latestFinishMs > 20 * 60 * 1000) {
+    } else if (
+      latestFinishMs !== null &&
+      nowMs - latestFinishMs > 35 * 60 * 1000 &&
+      !isFxMarketClosedUtc(nowMs)
+    ) {
       jobStatus = 'DEGRADED';
-      jobDetail = `Scheduled sync overdue (>20m since latest ${latest.job_name})`;
+      jobDetail = `Scheduled sync overdue (>35m since latest ${latest.job_name})`;
     } else {
       jobStatus = 'HEALTHY';
       jobDetail = `Latest ${latest.job_name} succeeded (${latest.duration_ms ?? 0}ms)`;
@@ -718,29 +747,22 @@ export async function evaluateSystemHealth(env: Env): Promise<{
     lastUpdated: lastJobTime,
   });
 
-  // 7. Daily Recap & Notification Retries visibility
+  // 7. Daily Recap visibility
   let recapStatus: HealthStatus = 'UNKNOWN';
   let recapDetail = 'No Daily Recap executions recorded yet';
   let recapLastUpdated: string | null = null;
-  try {
-    const latestRecap = await env.DB.prepare(
-      `SELECT status, started_at, summary FROM scheduled_job_runs WHERE job_name = 'DAILY_RECAP' ORDER BY started_at DESC LIMIT 1`
-    ).first() as { status?: string; started_at?: string; summary?: string } | null;
-    if (latestRecap) {
-      recapLastUpdated = normalizeUtcIso(latestRecap.started_at || null);
-      if (latestRecap.status === 'FAILED') {
-        recapStatus = 'UNAVAILABLE';
-        recapDetail = latestRecap.summary || 'Latest Daily Recap failed';
-      } else if (latestRecap.status === 'DEGRADED') {
-        recapStatus = 'DEGRADED';
-        recapDetail = latestRecap.summary || 'Latest Daily Recap partially failed';
-      } else {
-        recapStatus = 'HEALTHY';
-        recapDetail = latestRecap.summary || 'Latest Daily Recap succeeded';
-      }
+  if (latestRecap) {
+    recapLastUpdated = normalizeUtcIso(latestRecap.started_at || null);
+    if (latestRecap.status === 'FAILED') {
+      recapStatus = 'UNAVAILABLE';
+      recapDetail = latestRecap.summary || 'Latest Daily Recap failed';
+    } else if (latestRecap.status === 'DEGRADED') {
+      recapStatus = 'DEGRADED';
+      recapDetail = latestRecap.summary || 'Latest Daily Recap partially failed';
+    } else {
+      recapStatus = 'HEALTHY';
+      recapDetail = latestRecap.summary || 'Latest Daily Recap succeeded';
     }
-  } catch {
-    recapStatus = 'UNKNOWN';
   }
   subsystems.push({
     name: 'Daily Recap (21:00 UTC)',
@@ -751,7 +773,7 @@ export async function evaluateSystemHealth(env: Env): Promise<{
 
   // 8. Notification Retries queue health
   const retryDueCount =
-    recentDeliveries?.filter((d) => d.status === 'RETRY_SCHEDULED' || d.status === 'EXHAUSTED').length ?? 0;
+    recentDeliveries.filter((d) => d.status === 'RETRY_SCHEDULED' || d.status === 'EXHAUSTED').length;
   subsystems.push({
     name: 'Notification Retries',
     status: retryDueCount >= 3 ? 'DEGRADED' : recentTotal > 0 ? 'HEALTHY' : 'UNKNOWN',
@@ -764,18 +786,6 @@ export async function evaluateSystemHealth(env: Env): Promise<{
     lastUpdated: normalizeUtcIso(latestDeliveryTs),
   });
 
-  // 9. Application & Auth (lastUpdated derived from latest real audit event, never fabricated)
-  const latestAudit = await env.DB.prepare(`SELECT MAX(timestamp) as ts FROM audit_events`).first() as { ts?: string | null } | null;
-  const appConfigured = secretMap.ADMIN_PASSPHRASE && secretMap.ADMIN_SESSION_SECRET;
-  subsystems.push({
-    name: 'Application & Admin Auth',
-    status: appConfigured ? 'HEALTHY' : 'MISCONFIGURED',
-    detail: appConfigured
-      ? 'Worker active; admin secrets configured'
-      : 'ADMIN_PASSPHRASE or strong ADMIN_SESSION_SECRET (>=32 chars) missing',
-    lastUpdated: normalizeUtcIso(latestAudit?.ts || null),
-  });
-
   let overallStatus: HealthStatus = 'HEALTHY';
   if (subsystems.some((s) => s.status === 'UNAVAILABLE' || s.status === 'MISCONFIGURED' || s.status === 'DEGRADED')) {
     overallStatus = 'DEGRADED';
@@ -783,5 +793,5 @@ export async function evaluateSystemHealth(env: Env): Promise<{
     overallStatus = 'UNKNOWN';
   }
 
-  return { overallStatus, subsystems, recentJobs: recentJobs || [] };
+  return { overallStatus, subsystems, recentJobs };
 }

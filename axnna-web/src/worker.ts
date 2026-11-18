@@ -6,8 +6,7 @@ import { EconomicEvent, FreeEconomicCalendarProvider } from './providers/Fundame
 import { Confluence, FundamentalContext, FundamentalEngine } from './engine/FundamentalEngine';
 import { evaluateRiskGate } from './engine/RiskGate';
 import { evaluateOpenPaperTrades, registerPaperTradeFromApprovedSignal } from './engine/PaperTradingEngine';
-import { constantTimeSecretMatch } from './admin/auth';
-import { authenticateAdminRequest, handleAdminRoutes, SyncActionResult } from './admin/routes';
+import { constantTimeSecretMatch } from './utils/crypto';
 import { BacktestEngine, BacktestConfig } from './core-engine/BacktestEngine';
 import {
   acquireNamedLease,
@@ -25,7 +24,13 @@ import {
   releaseSyncLease,
   startJobRun,
 } from './ops/telemetry';
-import { parseUtcTimestampMs, toSqliteUtcTimestamp } from './utils/time';
+import { getMostRecentFxSessionCloseMs, isFxMarketClosedUtc, parseUtcTimestampMs, toSqliteUtcTimestamp } from './utils/time';
+
+export interface SyncActionResult {
+  status: 'SUCCEEDED' | 'DEGRADED' | 'FAILED' | 'ALREADY_RUNNING';
+  summary?: string;
+  error?: string;
+}
 
 export interface Env {
   DB: D1Database;
@@ -36,8 +41,6 @@ export interface Env {
   TWELVEDATA_API_KEY: string;
   FINNHUB_API_KEY?: string;
   BACKTEST_SECRET?: string;
-  ADMIN_PASSPHRASE?: string;
-  ADMIN_SESSION_SECRET?: string;
   ACTOR_HASH_SECRET?: string;
   ALLOWED_ORIGINS?: string;
 }
@@ -145,50 +148,6 @@ export default {
       return await handleBacktestRun(request, env, corsHeaders);
     }
 
-    const adminRes = await handleAdminRoutes(request, env, url, corsHeaders, {
-      runSync: () => this.runSynchronization(env, 'MANUAL_SYNC'),
-      retrySingleDelivery: (deliveryId: string) => retrySingleDeliveryById(env, deliveryId),
-    });
-    if (adminRes) {
-      return adminRes;
-    }
-
-    if (
-      (url.pathname === '/api/markets' || url.pathname === '/api/calendar' || url.pathname === '/api/signals') &&
-      request.method === 'GET'
-    ) {
-      const auth = await authenticateAdminRequest(request, env);
-      if (!auth.authenticated) {
-        await recordSecurityEvent(env.DB, {
-          eventType: 'PRIVATE_API_UNAUTHORIZED',
-          severity: 'MEDIUM',
-          sourceCategory: 'API_AUTH',
-          actorId: await getRequestActorHash(request, env, 'security'),
-          resource: url.pathname,
-        });
-        return Response.json({ error: 'Unauthorized' }, { status: 401, headers: corsHeaders });
-      }
-
-      if (url.pathname === '/api/markets') {
-        const { results } = await env.DB.prepare(`
-          SELECT instrument, timeframe, timestamp, open, high, low, close
-          FROM market_candles
-          ORDER BY timestamp DESC LIMIT 50
-        `).all();
-        return Response.json(results, { headers: corsHeaders });
-      }
-      if (url.pathname === '/api/calendar') {
-        const { results } = await env.DB.prepare(`
-          SELECT * FROM economic_events ORDER BY timestamp DESC LIMIT 20
-        `).all();
-        return Response.json(results, { headers: corsHeaders });
-      }
-      const { results } = await env.DB.prepare(`
-        SELECT * FROM signals ORDER BY generated_at DESC LIMIT 50
-      `).all();
-      return Response.json(results, { headers: corsHeaders });
-    }
-
     if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
       return Response.json({ error: 'Not Found' }, { status: 404, headers: corsHeaders });
     }
@@ -219,12 +178,21 @@ export default {
       );
       return;
     }
-    ctx.waitUntil(this.runSynchronization(env, 'CRON_SYNC'));
+    if (event.cron === '2 * * * *') {
+      ctx.waitUntil(this.runSynchronization(env, 'CRON_1H_SYNC', { mode: '1H_ONLY' }));
+      return;
+    }
+    ctx.waitUntil(this.runSynchronization(env, 'CRON_SYNC', { mode: '5M_AND_STRATEGY' }));
   },
 
-  async runSynchronization(env: Env, jobName: string = 'CRON_SYNC'): Promise<SyncActionResult> {
+  async runSynchronization(
+    env: Env,
+    jobName: string = 'CRON_SYNC',
+    options?: { mode?: 'FULL' | '5M_AND_STRATEGY' | '1H_ONLY' }
+  ): Promise<SyncActionResult> {
+    const mode = options?.mode ?? 'FULL';
     const leaseOwner = crypto.randomUUID();
-    const lease = await acquireSyncLease(env.DB, leaseOwner, 10 * 60 * 1000);
+    const lease = await acquireSyncLease(env.DB, leaseOwner, 5 * 60 * 1000);
     if (!lease.acquired) {
       return {
         status: 'ALREADY_RUNNING',
@@ -237,35 +205,75 @@ export default {
     let calendarCount = 0;
 
     try {
-      console.log('ECONOMIC_SYNC_STARTED');
-      const fundamentalProvider = new FreeEconomicCalendarProvider();
-      try {
-        const events = await fundamentalProvider.fetchUpcomingEvents('USD,EUR,GBP,JPY', 'today', 'tomorrow');
-        for (const ev of events) {
-          await env.DB.prepare(`
-            INSERT INTO economic_events (id, country, currency, event, timestamp, importance, estimate, previous, actual, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-              actual = excluded.actual,
-              estimate = excluded.estimate,
-              updated_at = CURRENT_TIMESTAMP
-          `).bind(ev.id, ev.country, ev.currency, ev.event, ev.timestamp, ev.importance, ev.estimate, ev.previous, ev.actual, ev.source).run();
+      if (mode !== '1H_ONLY') {
+        const calState = await env.DB.prepare(
+          `SELECT status, last_successful_sync FROM provider_health_state WHERE service_type = 'ECONOMIC_CALENDAR' LIMIT 1`
+        ).first() as { status?: string; last_successful_sync?: string | null } | null;
+        const lastCalSuccessMs = parseUtcTimestampMs(calState?.last_successful_sync);
+        const calendarFresh =
+          calState?.status === 'HEALTHY' &&
+          lastCalSuccessMs !== null &&
+          Date.now() - lastCalSuccessMs < 25 * 60 * 1000;
+
+        if (!calendarFresh) {
+          console.log('ECONOMIC_SYNC_STARTED');
+          const fundamentalProvider = new FreeEconomicCalendarProvider();
+          try {
+            const events = await fundamentalProvider.fetchUpcomingEvents('USD,EUR,GBP,JPY', 'today', 'tomorrow');
+            if (events.length > 0) {
+              const ids = events.map((ev) => ev.id);
+              const existingMap = new Map<string, { actual: string | null; estimate: string | null }>();
+              const minTs = events.reduce((m, ev) => (ev.timestamp < m ? ev.timestamp : m), events[0].timestamp);
+              const { results: existingRows } = await env.DB.prepare(
+                `SELECT id, actual, estimate FROM economic_events WHERE timestamp >= ?`
+              ).bind(minTs).all() as { results: Array<{ id: string; actual: string | null; estimate: string | null }> };
+              for (const row of existingRows || []) {
+                existingMap.set(row.id, { actual: row.actual ?? null, estimate: row.estimate ?? null });
+              }
+
+              const changedStmts: D1PreparedStatement[] = [];
+              for (const ev of events) {
+                if (!ids.includes(ev.id)) continue;
+                const prev = existingMap.get(ev.id);
+                const nextActual = ev.actual ?? null;
+                const nextEstimate = ev.estimate ?? null;
+                if (prev && prev.actual === nextActual && prev.estimate === nextEstimate) {
+                  continue;
+                }
+                changedStmts.push(
+                  env.DB.prepare(`
+                    INSERT INTO economic_events (id, country, currency, event, timestamp, importance, estimate, previous, actual, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                      actual = excluded.actual,
+                      estimate = excluded.estimate,
+                      updated_at = CURRENT_TIMESTAMP
+                  `).bind(ev.id, ev.country, ev.currency, ev.event, ev.timestamp, ev.importance, nextEstimate, ev.previous, nextActual, ev.source)
+                );
+              }
+              const CAL_BATCH = 50;
+              for (let idx = 0; idx < changedStmts.length; idx += CAL_BATCH) {
+                await env.DB.batch(changedStmts.slice(idx, idx + CAL_BATCH));
+              }
+            }
+            calendarCount = events.length;
+            await recordProviderHealth(env.DB, fundamentalProvider.name, 'ECONOMIC_CALENDAR', 'HEALTHY');
+            console.log('ECONOMIC_SYNC_COMPLETED');
+          } catch (error) {
+            hasPartialFailure = true;
+            await recordProviderHealth(env.DB, fundamentalProvider.name, 'ECONOMIC_CALENDAR', 'DEGRADED');
+            console.log('ECONOMIC_SYNC_FAILED', sanitizeErrorMessage(error));
+          }
         }
-        calendarCount = events.length;
-        await recordProviderHealth(env.DB, fundamentalProvider.name, 'ECONOMIC_CALENDAR', 'HEALTHY');
-        console.log('ECONOMIC_SYNC_COMPLETED');
-      } catch (error) {
-        hasPartialFailure = true;
-        await recordProviderHealth(env.DB, fundamentalProvider.name, 'ECONOMIC_CALENDAR', 'DEGRADED');
-        console.log('ECONOMIC_SYNC_FAILED', sanitizeErrorMessage(error));
       }
 
       const apiKey = (env.TWELVEDATA_API_KEY || '').trim();
       if (!hasRealSecret(apiKey)) {
         const cfgErr = 'TWELVEDATA_API_KEY missing or placeholder';
         console.error('MARKET_SYNC_CONFIG_ERROR: TWELVEDATA_API_KEY is missing or placeholder');
+        const tfsToMark = mode === '1H_ONLY' ? (['1H'] as const) : mode === '5M_AND_STRATEGY' ? (['5M'] as const) : SUPPORTED_TIMEFRAMES;
         for (const inst of SUPPORTED_INSTRUMENTS) {
-          for (const tf of SUPPORTED_TIMEFRAMES) {
+          for (const tf of tfsToMark) {
             await markMarketDataFailed(env, inst, tf, 'twelvedata');
           }
         }
@@ -277,27 +285,49 @@ export default {
       console.log('MARKET_SYNC_STARTED');
       const marketProvider = new TwelveDataMarketProvider(apiKey);
       let marketFailures = 0;
+      const nowMs = Date.now();
+      const fxClosed = isFxMarketClosedUtc(nowMs);
+      const recentCloseMs = fxClosed ? getMostRecentFxSessionCloseMs(nowMs) : 0;
+      const timeframesToCheck: readonly ('5M' | '1H')[] =
+        mode === '1H_ONLY' ? ['1H'] : SUPPORTED_TIMEFRAMES;
 
       try {
         for (const inst of SUPPORTED_INSTRUMENTS) {
           let inst5mOk = false;
 
-          for (const tf of SUPPORTED_TIMEFRAMES) {
+          for (const tf of timeframesToCheck) {
             try {
-              // Budget guard: skip redundant 1H fetches within the same hour if current completed 1H candle is already persisted
-              if (tf === '1H') {
-                const stateRow = await env.DB.prepare(
-                  `SELECT last_completed_candle, status FROM market_data_state WHERE instrument = ? AND timeframe = '1H'`
-                ).bind(inst).first() as { last_completed_candle?: string | null; status?: string } | null;
-                const latestExpected1hBarMs = Math.floor(Date.now() / 3_600_000) * 3_600_000 - 3_600_000;
-                const lastCandleMs = parseUtcTimestampMs(stateRow?.last_completed_candle);
-                if (stateRow?.status === 'HEALTHY' && lastCandleMs !== null && lastCandleMs >= latestExpected1hBarMs) {
+              const stateRow = await env.DB.prepare(
+                `SELECT last_completed_candle, status FROM market_data_state WHERE instrument = ? AND timeframe = ?`
+              ).bind(inst, tf).first() as { last_completed_candle?: string | null; status?: string } | null;
+              const lastCandleMs = parseUtcTimestampMs(stateRow?.last_completed_candle);
+
+              // Skip redundant 1H fetches: under 5M_AND_STRATEGY, rely on cron 2 * * * * unless 1H is missing or >2h stale
+              if (tf === '1H' && mode !== '1H_ONLY') {
+                const freshnessThresholdMs =
+                  mode === '5M_AND_STRATEGY'
+                    ? nowMs - 2 * 3_600_000
+                    : Math.floor(nowMs / 3_600_000) * 3_600_000 - 3_600_000;
+                if (stateRow?.status === 'HEALTHY' && lastCandleMs !== null && lastCandleMs >= freshnessThresholdMs) {
                   const cached1hCount = await env.DB.prepare(
                     `SELECT COUNT(*) as cnt FROM market_candles WHERE instrument = ? AND timeframe = '1H'`
                   ).bind(inst).first() as { cnt?: number } | null;
                   if (Number(cached1hCount?.cnt ?? 0) >= 20) {
                     continue;
                   }
+                }
+              }
+
+              // Skip TwelveData calls over weekend FX closure once Friday close candle is already stored
+              if (fxClosed && stateRow?.status === 'HEALTHY' && lastCandleMs !== null && lastCandleMs >= recentCloseMs - 35 * 60 * 1000) {
+                const cachedCountRow = await env.DB.prepare(
+                  `SELECT COUNT(*) as cnt FROM market_candles WHERE instrument = ? AND timeframe = ?`
+                ).bind(inst, tf).first() as { cnt?: number } | null;
+                if (Number(cachedCountRow?.cnt ?? 0) >= 20) {
+                  if (tf === '5M') {
+                    inst5mOk = true;
+                  }
+                  continue;
                 }
               }
 
@@ -312,24 +342,27 @@ export default {
                 continue;
               }
 
-              const upsertStmts: D1PreparedStatement[] = validCandles.map((c) => {
-                const isoTime = new Date(c.timestamp).toISOString();
-                const id = `${c.symbol}_${c.timeframe}_${c.timestamp}`;
-                return env.DB.prepare(`
-                  INSERT INTO market_candles (id, instrument, timeframe, timestamp, open, high, low, close, source_provider)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                  ON CONFLICT(instrument, timeframe, timestamp) DO UPDATE SET
-                    open = excluded.open,
-                    high = excluded.high,
-                    low = excluded.low,
-                    close = excluded.close,
-                    updated_at = CURRENT_TIMESTAMP
-                `).bind(id, inst, c.timeframe, isoTime, c.open, c.high, c.low, c.close, marketProvider.getProviderName());
-              });
+              // Delta-only persistence: read existing timestamps (cheap D1 read) and INSERT OR IGNORE only new bars
+              const { results: existingCandleRows } = await env.DB.prepare(
+                `SELECT timestamp FROM market_candles WHERE instrument = ? AND timeframe = ? ORDER BY timestamp DESC LIMIT 150`
+              ).bind(inst, tf).all() as { results: Array<{ timestamp: string }> };
+              const existingTsSet = new Set((existingCandleRows || []).map((r) => String(r.timestamp)));
 
-              const BATCH_CHUNK = 50;
-              for (let idx = 0; idx < upsertStmts.length; idx += BATCH_CHUNK) {
-                await env.DB.batch(upsertStmts.slice(idx, idx + BATCH_CHUNK));
+              const newCandles = validCandles.filter((c) => !existingTsSet.has(new Date(c.timestamp).toISOString()));
+              if (newCandles.length > 0) {
+                const insertStmts: D1PreparedStatement[] = newCandles.map((c) => {
+                  const isoTime = new Date(c.timestamp).toISOString();
+                  const id = `${c.symbol}_${c.timeframe}_${c.timestamp}`;
+                  return env.DB.prepare(`
+                    INSERT OR IGNORE INTO market_candles (id, instrument, timeframe, timestamp, open, high, low, close, source_provider)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  `).bind(id, inst, c.timeframe, isoTime, c.open, c.high, c.low, c.close, marketProvider.getProviderName());
+                });
+
+                const BATCH_CHUNK = 50;
+                for (let idx = 0; idx < insertStmts.length; idx += BATCH_CHUNK) {
+                  await env.DB.batch(insertStmts.slice(idx, idx + BATCH_CHUNK));
+                }
               }
 
               await env.DB.prepare(`
@@ -354,13 +387,13 @@ export default {
             }
           }
 
-          if (inst5mOk) {
+          if (mode !== '1H_ONLY' && inst5mOk) {
             await evaluateOpenPaperTrades(env.DB, inst);
             await this.runStrategyEngine(env, inst);
           }
         }
 
-        const totalFeeds = SUPPORTED_INSTRUMENTS.length * SUPPORTED_TIMEFRAMES.length;
+        const totalFeeds = SUPPORTED_INSTRUMENTS.length * timeframesToCheck.length;
         const providerOutcome =
           marketFailures === 0 ? 'HEALTHY' : marketFailures === totalFeeds ? 'FAILED' : 'DEGRADED';
         await recordProviderHealth(env.DB, marketProvider.name, 'MARKET_DATA', providerOutcome);
@@ -552,7 +585,7 @@ export default {
           hasCompletedMarketData: c5Chronological.length > 0 && c1Chronological.length > 0,
           latestCompletedCandleMs,
           nowMs: Date.now(),
-          maxMarketStalenessMs: 20 * 60 * 1000,
+          maxMarketStalenessMs: 30 * 60 * 1000,
           requireFundamentalAvailability: true,
           alreadyAlerted: Boolean(existingSentRow),
         });
@@ -668,7 +701,12 @@ async function handlePublicStatus(env: Env, corsHeaders: Record<string, string>)
           lastUpdated: sub.lastUpdated,
         })),
       },
-      { headers: corsHeaders }
+      {
+        headers: {
+          ...corsHeaders,
+          'Cache-Control': 'public, max-age=15',
+        },
+      }
     );
   } catch {
     return Response.json(
@@ -1141,60 +1179,6 @@ function buildMessageFromSignalRow(row: any): string {
     macroRegime,
     confluence
   );
-}
-
-async function retrySingleDeliveryById(
-  env: Env,
-  deliveryId: string
-): Promise<{ ok: boolean; status: string; error?: string }> {
-  if (!env.TELEGRAM_BOT_TOKEN) {
-    return { ok: false, status: 'REJECTED', error: 'TELEGRAM_BOT_TOKEN not configured.' };
-  }
-
-  const row = await env.DB.prepare(`
-    SELECT nd.id, nd.signal_id, nd.axnna_user_id, nd.destination, nd.status, nd.attempt_count,
-           s.instrument, s.direction, s.entry, s.structural_stop, s.structural_target, s.structural_rr, s.technical_score, s.market_context
-    FROM notification_deliveries nd
-    JOIN signals s ON s.signal_id = nd.signal_id
-    WHERE nd.id = ?
-  `).bind(deliveryId).first() as any;
-
-  if (!row) {
-    return { ok: false, status: 'NOT_FOUND' };
-  }
-  if (row.status === 'SENT' || row.status === 'PERMANENT_FAILURE' || row.status === 'EXHAUSTED') {
-    return { ok: false, status: 'REJECTED', error: `Delivery in terminal state (${row.status}).` };
-  }
-  if (row.status === 'SENDING') {
-    return { ok: false, status: 'CONFLICT', error: 'Delivery retry is already in progress.' };
-  }
-  if (Number(row.attempt_count ?? 0) >= MAX_DELIVERY_ATTEMPTS) {
-    return { ok: false, status: 'REJECTED', error: 'Maximum retry attempts reached.' };
-  }
-
-  const nowIso = new Date().toISOString();
-  const claimRes = await env.DB.prepare(`
-    UPDATE notification_deliveries
-    SET status = 'SENDING',
-        attempt_count = attempt_count + 1,
-        last_attempt_at = ?
-    WHERE id = ? AND status IN ('RETRY_SCHEDULED', 'FAILED') AND attempt_count < ?
-  `).bind(nowIso, deliveryId, MAX_DELIVERY_ATTEMPTS).run();
-
-  if (Number((claimRes as any)?.meta?.changes ?? 0) === 0) {
-    return { ok: false, status: 'CONFLICT', error: 'Delivery could not be claimed for retry.' };
-  }
-
-  const nextAttemptNumber = Number(row.attempt_count ?? 0) + 1;
-  const text = buildMessageFromSignalRow(row);
-  const result = await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, row.destination, text);
-  const outcome = await finalizeClaimedDelivery(env, row.signal_id, row.axnna_user_id, nextAttemptNumber, result);
-  if (outcome.ok) {
-    await env.DB.prepare(`UPDATE signals SET status = 'ALERTED' WHERE signal_id = ?`)
-      .bind(row.signal_id)
-      .run();
-  }
-  return outcome;
 }
 
 export async function deliverTelegramAlerts(

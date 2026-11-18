@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import worker, { Env, runDailyRecap } from '../src/worker';
+import worker, { Env, retryScheduledDeliveries, runDailyRecap } from '../src/worker';
 import { FundamentalEngine } from '../src/engine/FundamentalEngine';
 import { BacktestEngine } from '../src/core-engine/BacktestEngine';
 import { StrategyEngine } from '../src/core-engine/StrategyEngine';
@@ -28,14 +28,13 @@ describe('Stage D.2 Consolidated Release-Blocking Remediation Suite', () => {
       TELEGRAM_WEBHOOK_SECRET: 'stage_d2_webhook_secret_32_chars',
       TWELVEDATA_API_KEY: 'stage_d2_twelvedata_key',
       BACKTEST_SECRET: 'stage_d2_backtest_secret',
-      ADMIN_PASSPHRASE: 'stage-d2-admin-passphrase',
-      ADMIN_SESSION_SECRET: 'stage-d2-hmac-signing-secret-32chars',
       ACTOR_HASH_SECRET: 'stage-d2-actor-hash-secret-32chars',
       ALLOWED_ORIGINS: 'https://axnna-staging.madede.workers.dev',
     };
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -58,22 +57,6 @@ describe('Stage D.2 Consolidated Release-Blocking Remediation Suite', () => {
       status: 'ALERT_ELIGIBLE',
       ...overrides,
     };
-  }
-
-  async function loginAdmin(): Promise<string> {
-    const res = await worker.fetch(
-      new Request('https://axnna-staging.madede.workers.dev/api/auth/config', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Origin: 'https://axnna-staging.madede.workers.dev',
-        },
-        body: JSON.stringify({ passphrase: 'stage-d2-admin-passphrase' }),
-      }),
-      env
-    );
-    expect(res.status).toBe(200);
-    return res.headers.get('Set-Cookie')!.split(';')[0];
   }
 
   it('AUD-D1-01: Rejects UNKNOWN/failed calendar (even with legacy events), stale active-session 5M feeds, and preserves FX weekend schedule semantics', async () => {
@@ -280,26 +263,6 @@ describe('Stage D.2 Consolidated Release-Blocking Remediation Suite', () => {
     // Invariant: current_balance === starting_balance + sum(realized net_pnl)
     expect(ov.account.current_balance).toBeCloseTo(10000 + ov.summary.realizedPnl, 4);
 
-    // Non-reset startingBalance update must reconcile current_balance
-    const cookie = await loginAdmin();
-    const updRes = await worker.fetch(
-      new Request('https://axnna-staging.madede.workers.dev/api/config/paper/account', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Cookie: cookie,
-          Origin: 'https://axnna-staging.madede.workers.dev',
-          'X-Requested-With': 'AxnnaAdmin',
-        },
-        body: JSON.stringify({ startingBalance: 25000, riskPerTradePercent: 1.0, resetAccount: false }),
-      }),
-      env
-    );
-    expect(updRes.status).toBe(200);
-    const afterStartUpd = await getPaperPortfolioOverview(env.DB);
-    expect(afterStartUpd.account.starting_balance).toBe(25000);
-    expect(afterStartUpd.account.current_balance).toBeCloseTo(25000 + ov.summary.realizedPnl, 4);
-
     // Signals must STILL be 'ALERTED' even after TARGET_HIT / STOP_HIT, and Daily Recap must count both!
     expect((sqlite.prepare(`SELECT status FROM signals WHERE signal_id = 'sig_late_early_win'`).get() as any).status).toBe('ALERTED');
     const recapPayloads: string[] = [];
@@ -314,13 +277,10 @@ describe('Stage D.2 Consolidated Release-Blocking Remediation Suite', () => {
     expect(recapPayloads[0]).toContain('Alerted setups: 2');
     expect(recapPayloads[0]).not.toContain('Silence is a valid signal.');
 
-    // Admin totals still preserve alertedSignals = 2
-    const ovApiRes = await worker.fetch(
-      new Request('https://axnna-staging.madede.workers.dev/api/config/overview?days=7', { headers: { Cookie: cookie } }),
-      env
-    );
-    const ovApi = (await ovApiRes.json()) as any;
-    expect(ovApi.totals.alertedSignals).toBe(2);
+    // Filtered portfolio query directly verifies summaryScope & filteredTotal
+    const filteredOv = await getPaperPortfolioOverview(env.DB, { instrument: 'GBPUSD', limit: 25, offset: 0 });
+    expect(filteredOv.summaryScope).toBe('ALL_ACCOUNT_TRADES');
+    expect(filteredOv.filteredTotal).toBe(1);
 
     // Atomic closure rollback check: trigger failure on paper_accounts keeps paper_trades in ACTIVE_TRADE!
     seedAlertedSignal('sig_atomic_rb', 'LONG', 'EURUSD', t0 + 180 * 60_000, 1.1, 1.095, 1.11);
@@ -472,10 +432,8 @@ describe('Stage D.2 Consolidated Release-Blocking Remediation Suite', () => {
     spyProc.mockRestore();
   });
 
-  it('AUD-D1-07, AUD-D1-08, AUD-D1-09, AUD-D1-11, AUD-D1-12 & AUD-D1-14: Guards concurrent retries, recap locks, batched candles, filtered Admin pagination, event pruning, body limits, atomic rate limits & pairing audit', async () => {
-    const cookie = await loginAdmin();
-
-    // 1. Concurrent manual delivery retries claim atomically so Telegram receives only 1 send
+  it('AUD-D1-07, AUD-D1-08, AUD-D1-11, AUD-D1-12, AUD-D1-14 & Free-Tier Budget: Guards concurrent retries, recap locks, delta-only candles, split crons, event pruning, body limits & atomic rate limits', async () => {
+    // 1. Concurrent scheduled delivery retries claim atomically so Telegram receives only 1 send
     sqlite.prepare(`INSERT INTO axnna_users (id, telegram_user_id, telegram_chat_id, status, connected_at) VALUES ('u_c1', '501', '501', 'CONNECTED', '2026-11-17T00:00:00Z')`).run();
     sqlite.prepare(`INSERT INTO signals (signal_id, strategy_id, strategy_version, instrument, direction, generated_at, anchor_timeframe, execution_timeframe, entry, structural_stop, structural_target, structural_rr, status, technical_score) VALUES ('sig_c1', 'AXNNA_V1_LIQUIDITY_FVG', 'technical-v1', 'EURUSD', 'LONG', '2026-11-17T00:00:00Z', '1H', '5M', 1.1, 1.095, 1.11, 2.0, 'ALERT_ELIGIBLE', 80)`).run();
     sqlite.prepare(`INSERT INTO notification_deliveries (id, signal_id, axnna_user_id, channel, destination, status, attempt_count) VALUES ('nd_c1', 'sig_c1', 'u_c1', 'TELEGRAM', '501', 'RETRY_SCHEDULED', 1)`).run();
@@ -489,24 +447,19 @@ describe('Stage D.2 Consolidated Release-Blocking Remediation Suite', () => {
       })
     );
 
-    const [rA, rB] = await Promise.all([
-      worker.fetch(
-        new Request('https://axnna-staging.madede.workers.dev/api/config/deliveries/nd_c1/retry', {
-          method: 'POST',
-          headers: { Cookie: cookie, Origin: 'https://axnna-staging.madede.workers.dev', 'X-Requested-With': 'AxnnaAdmin' },
-        }),
-        env
-      ),
-      worker.fetch(
-        new Request('https://axnna-staging.madede.workers.dev/api/config/deliveries/nd_c1/retry', {
-          method: 'POST',
-          headers: { Cookie: cookie, Origin: 'https://axnna-staging.madede.workers.dev', 'X-Requested-With': 'AxnnaAdmin' },
-        }),
-        env
-      ),
+    const [retriedA, retriedB] = await Promise.all([
+      retryScheduledDeliveries(env),
+      retryScheduledDeliveries(env),
     ]);
-    expect([rA.status, rB.status].sort()).toEqual([200, 400]); // One succeeds, second sees terminal/claimed state
+    expect(retriedA + retriedB).toBe(1);
     expect(tgCalls).toBe(1);
+
+    // Removed /api/config/* and /api/auth/config routes cleanly return 404 JSON
+    const removedRes = await worker.fetch(
+      new Request('https://axnna-staging.madede.workers.dev/api/config/overview'),
+      env
+    );
+    expect(removedRes.status).toBe(404);
 
     // 2. Concurrent /start webhook claims only 1 TELEGRAM_CONNECTION_COMPLETED audit event
     const sessRes = await worker.fetch(new Request('https://axnna-staging.madede.workers.dev/api/telegram/session', { method: 'POST' }), env);
@@ -524,7 +477,7 @@ describe('Stage D.2 Consolidated Release-Blocking Remediation Suite', () => {
     const pairAudits = (sqlite.prepare(`SELECT COUNT(*) as c FROM audit_events WHERE event_type = 'TELEGRAM_CONNECTION_COMPLETED'`).get() as any).c;
     expect(pairAudits).toBe(1);
 
-    // 3. Oversized JSON payload (>64KB Telegram webhook, >8KB admin mutation) rejected with 413
+    // 3. Oversized JSON payload (>64KB Telegram webhook) rejected with 413
     const hugeWh = await worker.fetch(
       new Request('https://axnna-staging.madede.workers.dev/api/telegram/webhook', {
         method: 'POST',
@@ -535,21 +488,6 @@ describe('Stage D.2 Consolidated Release-Blocking Remediation Suite', () => {
     );
     expect(hugeWh.status).toBe(413);
 
-    const hugeAdmin = await worker.fetch(
-      new Request('https://axnna-staging.madede.workers.dev/api/config/system/notifications', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Cookie: cookie,
-          Origin: 'https://axnna-staging.madede.workers.dev',
-          'X-Requested-With': 'AxnnaAdmin',
-        },
-        body: JSON.stringify({ pad: 'x'.repeat(10_000) }),
-      }),
-      env
-    );
-    expect(hugeAdmin.status).toBe(413);
-
     // 4. Atomic checkD1RateLimit strictly enforces limit under burst calls
     const results = await Promise.all(
       Array.from({ length: 6 }, () => checkD1RateLimit(env.DB, 'burst:test', 3, 60))
@@ -557,20 +495,7 @@ describe('Stage D.2 Consolidated Release-Blocking Remediation Suite', () => {
     expect(results.filter((r) => r.allowed)).toHaveLength(3);
     expect(results.filter((r) => !r.allowed)).toHaveLength(3);
 
-    // 5. Server-side filtered Admin overview returns accurate filteredTotals
-    const filtRes = await worker.fetch(
-      new Request('https://axnna-staging.madede.workers.dev/api/config/overview?userSearch=dup_wh&signalInstrument=GBPUSD&paperInstrument=GBPUSD', {
-        headers: { Cookie: cookie },
-      }),
-      env
-    );
-    const filt = (await filtRes.json()) as any;
-    expect(filt.totals.usersTotal).toBe(2);
-    expect(filt.filteredTotals.users).toBe(1);
-    expect(filt.filteredTotals.signals).toBe(0);
-    expect(filt.filteredTotals.paperTrades).toBe(0);
-
-    // 6. Economic event retention prunes >90d events while preserving recent events
+    // 5. Economic event & candle retention prunes >90d rows while preserving recent rows
     const oldEvIso = new Date(Date.now() - 120 * 86400 * 1000).toISOString();
     const newEvIso = new Date().toISOString();
     sqlite.prepare(`INSERT INTO economic_events (id, country, currency, event, timestamp, importance, source) VALUES ('ev_prune_old', 'US', 'USD', 'Old', ?, 'LOW', 'biquote'), ('ev_keep_new', 'US', 'USD', 'New', ?, 'LOW', 'biquote')`).run(oldEvIso, newEvIso);
@@ -578,11 +503,13 @@ describe('Stage D.2 Consolidated Release-Blocking Remediation Suite', () => {
     expect(pruned.economicEventsDeleted).toBe(1);
     expect(sqlite.prepare(`SELECT id FROM economic_events WHERE id = 'ev_keep_new'`).get()).toBeDefined();
 
-    // 7. Synchronize >100 candles via chunked D1 batching & verify 1H budget skips redundant same-hour 1H fetch on 2nd sync
-    const baseMs = Math.floor(Date.now() / 300_000) * 300_000;
+    // 6. Split 1H_ONLY (4 calls) + 5M_AND_STRATEGY (4 calls) + delta-only candle persistence + 30m calendar throttle
+    // Pin to active FX session Tuesday 12:00 UTC
+    const tuesdayNoonUtc = new Date('2026-11-17T12:00:00.000Z').getTime();
+    vi.setSystemTime(tuesdayNoonUtc);
     const makeBars = (count: number, step: number) =>
       Array.from({ length: count }, (_, idx) => {
-        const ts = baseMs - (count - idx) * step;
+        const ts = tuesdayNoonUtc - (count - idx) * step;
         return {
           datetime: new Date(ts).toISOString().replace('T', ' ').slice(0, 19),
           open: '1.1000',
@@ -593,29 +520,61 @@ describe('Stage D.2 Consolidated Release-Blocking Remediation Suite', () => {
       });
 
     let fetch1hCount = 0;
+    let fetch5mCount = 0;
+    let calFetchCount = 0;
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
-        if (url.includes('biquote.io')) return new Response(JSON.stringify([]), { status: 200 });
+        if (url.includes('biquote.io')) {
+          calFetchCount++;
+          return new Response(
+            JSON.stringify([
+              { id: 'ev_t1', time: '2026-11-17T14:00:00Z', countryCode: 'US', currency: 'USD', name: 'US Retail', importance: 'medium' },
+            ]),
+            { status: 200 }
+          );
+        }
         if (url.includes('api.twelvedata.com')) {
           if (url.includes('interval=1h')) {
             fetch1hCount++;
             return new Response(JSON.stringify({ status: 'ok', values: makeBars(30, 3_600_000) }), { status: 200 });
           }
+          fetch5mCount++;
           return new Response(JSON.stringify({ status: 'ok', values: makeBars(110, 300_000) }), { status: 200 });
         }
         return new Response('Not Found', { status: 404 });
       })
     );
-    await worker.runSynchronization(env, 'BATCH_TEST_1');
-    const first1hCount = fetch1hCount;
-    expect(first1hCount).toBe(4); // 4 instruments once
+
+    // Separate 1H cron runs ONLY 4 calls (1 per pair), skips 5M and calendar
+    await worker.runSynchronization(env, 'CRON_1H_SYNC', { mode: '1H_ONLY' });
+    expect(fetch1hCount).toBe(4);
+    expect(fetch5mCount).toBe(0);
+    expect(calFetchCount).toBe(0);
+
+    // 5M_AND_STRATEGY cron runs ONLY 4 5M calls (reuses cached 1H), plus calendar once
+    await worker.runSynchronization(env, 'CRON_SYNC', { mode: '5M_AND_STRATEGY' });
+    expect(fetch1hCount).toBe(4);
+    expect(fetch5mCount).toBe(4);
+    expect(calFetchCount).toBe(1);
     expect((sqlite.prepare(`SELECT COUNT(*) as c FROM market_candles WHERE instrument = 'EURUSD' AND timeframe = '5M'`).get() as any).c).toBe(110);
 
-    await worker.runSynchronization(env, 'BATCH_TEST_2');
-    expect(fetch1hCount).toBe(first1hCount); // 1H skipped within same hour -> budget saved
+    // Second 5M_AND_STRATEGY 15m later skips calendar (<25m throttle) and only inserts new candle bars
+    vi.setSystemTime(tuesdayNoonUtc + 15 * 60_000);
+    await worker.runSynchronization(env, 'CRON_SYNC', { mode: '5M_AND_STRATEGY' });
+    expect(calFetchCount).toBe(1);
+    expect(fetch1hCount).toBe(4);
+    expect(fetch5mCount).toBe(8);
 
-    // 8. Concurrent runDailyRecap respects DAILY_RECAP lease so each of the 2 connected subscribers only receives 1 recap (not 4)
+    // Weekend FX close skips TwelveData fetches when Friday close candles (21:55 UTC before 22:00 UTC close) are already stored
+    vi.setSystemTime(new Date('2026-11-21T12:00:00.000Z').getTime());
+    sqlite.prepare(`UPDATE market_data_state SET last_completed_candle = '2026-11-20T21:55:00.000Z', status = 'HEALTHY'`).run();
+    await worker.runSynchronization(env, 'WEEKEND_SKIP', { mode: '5M_AND_STRATEGY' });
+    expect(fetch5mCount).toBe(8);
+    expect(fetch1hCount).toBe(4);
+    vi.useRealTimers();
+
+    // 7. Concurrent runDailyRecap respects DAILY_RECAP lease so each of the 2 connected subscribers only receives 1 recap (not 4)
     let recapSentCount = 0;
     vi.stubGlobal(
       'fetch',
