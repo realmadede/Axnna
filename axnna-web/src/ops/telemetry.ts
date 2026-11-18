@@ -576,17 +576,17 @@ export async function evaluateSystemHealth(env: Env): Promise<{
     env.DB.prepare(
       `SELECT status, COALESCE(delivered_at, last_attempt_at, created_at) as event_ts
        FROM notification_deliveries
-       ORDER BY COALESCE(last_attempt_at, created_at) DESC
+       ORDER BY COALESCE(last_attempt_at, created_at) DESC, rowid DESC
        LIMIT 20`
     ).all(),
     env.DB.prepare(
       `SELECT id, job_name, status, started_at, finished_at, duration_ms, summary, error_message
        FROM scheduled_job_runs
-       ORDER BY started_at DESC
+       ORDER BY started_at DESC, rowid DESC
        LIMIT 15`
     ).all(),
     env.DB.prepare(
-      `SELECT status, started_at, summary FROM scheduled_job_runs WHERE job_name = 'DAILY_RECAP' ORDER BY started_at DESC LIMIT 1`
+      `SELECT status, started_at, summary FROM scheduled_job_runs WHERE job_name = 'DAILY_RECAP' ORDER BY started_at DESC, rowid DESC LIMIT 1`
     ).first().catch(() => null) as Promise<{ status?: string; started_at?: string; summary?: string } | null>,
   ]);
 

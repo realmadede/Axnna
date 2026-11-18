@@ -215,7 +215,7 @@ describe('Stage C.2 Audit Remediation Regression Suite', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('Server Error', { status: 503 })));
     const s0 = await runDailyRecap(env, '2026-11-17');
     expect(s0).toBe(0);
-    const failedJob = sqlite.prepare(`SELECT status FROM scheduled_job_runs WHERE job_name = 'DAILY_RECAP' ORDER BY started_at DESC LIMIT 1`).get() as any;
+    const failedJob = sqlite.prepare(`SELECT status FROM scheduled_job_runs WHERE job_name = 'DAILY_RECAP' ORDER BY started_at DESC, rowid DESC LIMIT 1`).get() as any;
     expect(failedJob.status).toBe('FAILED');
 
     // Partial failure (u_ok succeeds, u_fail fails) -> job DEGRADED
@@ -235,7 +235,7 @@ describe('Stage C.2 Audit Remediation Regression Suite', () => {
     expect(s1).toBe(1);
     expect(sentTexts[0]).toContain('Alerted setups: 1');
     expect(sentTexts[0]).toContain('Event-risk gated / unsent eligible: 1');
-    const degJob = sqlite.prepare(`SELECT status FROM scheduled_job_runs WHERE job_name = 'DAILY_RECAP' ORDER BY started_at DESC LIMIT 1`).get() as any;
+    const degJob = sqlite.prepare(`SELECT status FROM scheduled_job_runs WHERE job_name = 'DAILY_RECAP' ORDER BY started_at DESC, rowid DESC LIMIT 1`).get() as any;
     expect(degJob.status).toBe('DEGRADED');
 
     // Retry clears u_fail without resending u_ok
