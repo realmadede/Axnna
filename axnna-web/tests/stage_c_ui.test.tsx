@@ -47,14 +47,12 @@ describe('Stage C Interactive UI Tests', () => {
     });
   });
 
-  it('Contact page renders direct Telegram support link to t.me/mad_ede without legacy form', () => {
+  it('Contact page renders only a Give Feedback button linking to Telegram without exposing username text', () => {
     render(<Contact />);
-    const links = screen.getAllByRole('link', { name: /mad_ede/i });
-    expect(links.length).toBeGreaterThan(0);
-    for (const link of links) {
-      expect(link.getAttribute('href')).toBe('https://t.me/mad_ede');
-      expect(link.getAttribute('target')).toBe('_blank');
-    }
+    const link = screen.getByRole('link', { name: /give feedback/i });
+    expect(link.getAttribute('href')).toBe('https://t.me/mad_ede');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(screen.queryByText(/mad_ede/i)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Send Feedback' })).toBeNull();
   });
 });
