@@ -56,15 +56,15 @@ jobs:
             const fs = require("node:fs");
             const target = process.env.TARGET_ENV;
             const raw = fs.readFileSync("wrangler.toml", "utf8");
-            const sectionHeader = `[env.${target}]`;
-            const idx = raw.indexOf(sectionHeader);
+            const d1Header = `[[env.${target}.d1_databases]]`;
+            const idx = raw.indexOf(d1Header);
             if (idx === -1) {
-              console.error(`Missing [${target}] configuration in wrangler.toml`);
+              console.error(`Missing ${d1Header} configuration in wrangler.toml`);
               process.exit(1);
             }
-            const rest = raw.slice(idx + sectionHeader.length);
-            const nextEnvMatch = rest.match(/\n\[env\.[^\]]+\]/);
-            const block = nextEnvMatch ? rest.slice(0, nextEnvMatch.index) : rest;
+            const rest = raw.slice(idx + d1Header.length);
+            const nextSection = rest.match(/\n\[/);
+            const block = nextSection ? rest.slice(0, nextSection.index) : rest;
             const dbMatch = block.match(/database_id\s*=\s*"([^"]+)"/);
             if (!dbMatch || !dbMatch[1] || dbMatch[1].startsWith("REPLACE_WITH_")) {
               console.error(`D1 database_id for environment "${target}" is missing or still a REPLACE_WITH_ placeholder.`);
