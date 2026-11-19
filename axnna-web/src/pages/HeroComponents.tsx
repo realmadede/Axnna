@@ -1,18 +1,29 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Activity, Target, ChevronLeft, Bell, MessageSquare } from 'lucide-react';
+import { Activity, Bell, ChevronLeft, MessageSquare, ShieldCheck, Target } from 'lucide-react';
 
 export function HeroMarketIntelligence() {
   return (
-    <div className="glass-card" style={{ width: '100%', maxWidth: '360px', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
-        <Activity size={20} color="var(--accent-color)" />
-        <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Market Monitor</h3>
+    <div className="glass-card" style={{ width: '100%', maxWidth: '370px', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.85rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+          <Activity size={18} color="var(--accent-color)" />
+          <h3 style={{ fontSize: '0.95rem', fontWeight: 600 }}>Market Monitor</h3>
+        </div>
+        <span className="admin-badge admin-badge--ok">24/5 FEED</span>
       </div>
-      {['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD'].map((pair, i) => (
-        <div key={pair} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', backgroundColor: 'rgba(128,128,128,0.05)', borderRadius: '8px' }}>
-          <strong style={{ fontSize: '1rem' }}>{pair}</strong>
-          <div className="axnna-pulse-dot" style={{ animationDelay: `${i * 0.4}s` }} />
+      {[
+        { pair: 'EURUSD', tf: '1H -> 5M' },
+        { pair: 'GBPUSD', tf: '1H -> 5M' },
+        { pair: 'USDJPY', tf: '1H -> 5M' },
+        { pair: 'XAUUSD', tf: '1H -> 5M' },
+      ].map((item, i) => (
+        <div key={item.pair} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.7rem 0.85rem', backgroundColor: 'var(--surface-elevated)', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
+          <strong className="mono" style={{ fontSize: '0.95rem' }}>{item.pair}</strong>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            <span className="mono" style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{item.tf}</span>
+            <div className="axnna-pulse-dot" style={{ animationDelay: `${i * 0.4}s` }} />
+          </div>
         </div>
       ))}
     </div>
@@ -21,15 +32,23 @@ export function HeroMarketIntelligence() {
 
 export function HeroSignalAnalysis() {
   return (
-    <div className="glass-card" style={{ width: '100%', maxWidth: '360px', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '1rem' }}>
-        <Target size={20} color="var(--accent-color)" />
-        <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Engine Processing</h3>
+    <div className="glass-card" style={{ width: '100%', maxWidth: '370px', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.85rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+          <Target size={18} color="var(--accent-color)" />
+          <h3 style={{ fontSize: '0.95rem', fontWeight: 600 }}>Deterministic Scoring</h3>
+        </div>
+        <span className="admin-badge">FAIL-CLOSED</span>
       </div>
-      {['Structural Geometry', 'Liquidity Sweep', 'Displacement', 'Macro Context'].map((step) => (
-        <div key={step} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', backgroundColor: 'rgba(128,128,128,0.05)', borderRadius: '8px' }}>
-          <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>{step}</span>
-          <Activity size={16} color="var(--success-color)" />
+      {[
+        { label: 'HTF Structural Bias', value: 'PASS' },
+        { label: 'Liquidity Sweep', value: 'CONFIRMED' },
+        { label: 'Displacement + FVG', value: 'ALIGNED' },
+        { label: 'Macro Event Risk Gate', value: 'CLEAR' },
+      ].map((step) => (
+        <div key={step.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.7rem 0.85rem', backgroundColor: 'var(--surface-elevated)', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
+          <span style={{ fontSize: '0.88rem', color: 'var(--text-muted)' }}>{step.label}</span>
+          <span className="mono" style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--success-color)' }}>{step.value}</span>
         </div>
       ))}
     </div>
@@ -37,56 +56,43 @@ export function HeroSignalAnalysis() {
 }
 
 export function HeroTelegramMock() {
-  const [score, setScore] = useState(65);
-
-  useEffect(() => {
-    let s = 65;
-    const interval = setInterval(() => {
-      s += 1;
-      if (s >= 78) {
-        clearInterval(interval);
-      }
-      setScore(s);
-    }, 40);
-    return () => clearInterval(interval);
-  }, []);
-
   return (
-    <div style={{ width: '100%', maxWidth: '300px', backgroundColor: '#0f0f0f', border: '4px solid var(--text-color)', borderRadius: '32px', height: '400px', position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 10px 40px rgba(0,0,0,0.2)' }}>
-      <div style={{ position: 'absolute', top: 0, left: '50%', transform: 'translateX(-50%)', width: '120px', height: '24px', backgroundColor: 'var(--text-color)', borderBottomLeftRadius: '12px', borderBottomRightRadius: '12px', zIndex: 10 }} />
-      <div style={{ backgroundColor: '#212121', paddingTop: '2.5rem', paddingBottom: '0.5rem', paddingLeft: '0.5rem', paddingRight: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-        <ChevronLeft size={24} color="#5288c1" />
-        <div style={{ width: 32, height: 32, borderRadius: '50%', backgroundColor: 'var(--text-color)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <Bell size={16} color="var(--bg-color)" />
+    <div style={{ width: '100%', maxWidth: '310px', backgroundColor: '#0f0f0f', border: '3px solid var(--border-strong)', borderRadius: '28px', height: '380px', position: 'relative', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 16px 40px rgba(0,0,0,0.28)' }}>
+      <div style={{ backgroundColor: '#1d222b', padding: '0.9rem 1rem', display: 'flex', alignItems: 'center', gap: '0.55rem', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+        <ChevronLeft size={20} color="#5288c1" />
+        <div style={{ width: 32, height: 32, borderRadius: '50%', backgroundColor: 'var(--accent-color)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Bell size={15} color="#ffffff" />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           <span style={{ color: '#fff', fontSize: '0.9rem', fontWeight: 600, lineHeight: 1.1 }}>Axnna</span>
-          <span style={{ color: '#aaa', fontSize: '0.7rem' }}>bot</span>
+          <span style={{ color: '#8f9bb3', fontSize: '0.72rem' }}>bot</span>
         </div>
       </div>
-      <div style={{ flex: 1, padding: '1rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', backgroundImage: 'radial-gradient(circle at center, #1a1a1a 0%, #0f0f0f 100%)' }}>
+      <div style={{ flex: 1, padding: '1rem', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', background: 'linear-gradient(180deg, #111620 0%, #0b0e14 100%)' }}>
         <div
           className="axnna-fade-in"
-          style={{ backgroundColor: '#2b5278', color: '#fff', borderRadius: '16px', borderBottomLeftRadius: '4px', padding: '1rem', alignSelf: 'flex-start', width: '100%', boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }}
+          style={{ backgroundColor: '#1f3b5b', color: '#fff', borderRadius: '14px', borderBottomLeftRadius: '4px', padding: '1rem', width: '100%' }}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-            <strong style={{ fontSize: '1rem' }}>EURUSD</strong>
-            <span style={{ color: 'var(--success-color)', fontWeight: 600 }}>BUY</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.45rem' }}>
+            <strong className="mono" style={{ fontSize: '0.98rem' }}>EURUSD</strong>
+            <span className="mono" style={{ color: '#2dd47e', fontWeight: 600 }}>LONG</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
-            <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.8rem' }}>Signal strength</span>
-            <span style={{ color: score >= 78 ? 'var(--success-color)' : '#fff', fontSize: '0.85rem', fontWeight: 600 }}>{score}%</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.9rem', fontSize: '0.82rem' }}>
+            <span style={{ color: 'rgba(255,255,255,0.72)' }}>Score</span>
+            <span className="mono" style={{ color: '#2dd47e', fontWeight: 600 }}>78 / 100</span>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.8rem' }}>
-            <div style={{ color: 'rgba(255,255,255,0.7)' }}>Entry:</div>
+          <div className="mono" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.45rem', fontSize: '0.8rem' }}>
+            <div style={{ color: 'rgba(255,255,255,0.72)' }}>Entry</div>
             <div style={{ textAlign: 'right' }}>1.17420</div>
-            <div style={{ color: 'rgba(255,255,255,0.7)' }}>Stop Loss:</div>
+            <div style={{ color: 'rgba(255,255,255,0.72)' }}>Stop</div>
             <div style={{ textAlign: 'right' }}>1.17280</div>
+            <div style={{ color: 'rgba(255,255,255,0.72)' }}>Target</div>
+            <div style={{ textAlign: 'right' }}>1.17740</div>
           </div>
         </div>
       </div>
-      <div style={{ height: '40px', backgroundColor: '#212121', display: 'flex', alignItems: 'center', padding: '0 1rem', color: '#aaa', fontSize: '0.8rem' }}>
-        Message
+      <div style={{ height: '40px', backgroundColor: '#1d222b', display: 'flex', alignItems: 'center', padding: '0 1rem', color: '#8f9bb3', fontSize: '0.8rem', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+        /status EURUSD
       </div>
     </div>
   );
@@ -94,70 +100,86 @@ export function HeroTelegramMock() {
 
 export function DynamicHero() {
   const [activeIndex, setActiveIndex] = useState(0);
+  const [userSelected, setUserSelected] = useState(false);
 
   useEffect(() => {
+    if (userSelected) return;
     const timer = setInterval(() => {
       setActiveIndex((prev) => (prev + 1) % 3);
-    }, 5000);
+    }, 5500);
     return () => clearInterval(timer);
-  }, []);
+  }, [userSelected]);
 
-  const states = [
-    {
-      title: <><span className="text-gradient">Market intelligence.</span><br />Always monitoring.</>,
-      desc: 'Axnna constantly tracks major currency pairs across multiple execution timeframes, mapping structure and liquidity.',
-      visual: <HeroMarketIntelligence />
-    },
-    {
-      title: <><span className="text-gradient">Signal analysis.</span><br />Checking context.</>,
-      desc: 'Every setup is evaluated geometrically and checked against extreme macroeconomic event risk before being scored.',
-      visual: <HeroSignalAnalysis />
-    },
-    {
-      title: <><span className="text-gradient">Automated signals.</span><br />Delivered natively.</>,
-      desc: 'When the numbers align and the internal score exceeds 65%, you receive a structured notification instantly.',
-      visual: <HeroTelegramMock />
-    }
+  const stages = [
+    { label: '01 Monitor', visual: <HeroMarketIntelligence /> },
+    { label: '02 Evaluate', visual: <HeroSignalAnalysis /> },
+    { label: '03 Deliver', visual: <HeroTelegramMock /> },
   ];
 
   return (
-    <section className="section-padding" style={{ minHeight: '80vh', display: 'flex', alignItems: 'center', paddingTop: '4rem' }}>
-      <div className="container" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '4rem', alignItems: 'center', width: '100%' }}>
+    <section className="section-padding" style={{ minHeight: '76vh', display: 'flex', alignItems: 'center', paddingTop: '3.5rem' }}>
+      <div className="container" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '3.5rem', alignItems: 'center', width: '100%' }}>
         <div>
-          <div key={`copy-${activeIndex}`} className="axnna-fade-in">
-            <h1 className="hero-title" style={{ marginBottom: '1.5rem' }}>
-              {states[activeIndex].title}
-            </h1>
-            <p style={{ fontSize: '1.25rem', color: 'var(--text-muted)', marginBottom: '3rem', maxWidth: '500px', lineHeight: 1.6 }}>
-              {states[activeIndex].desc}
-            </p>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', padding: '0.35rem 0.75rem', borderRadius: '9999px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', marginBottom: '1.5rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+            <ShieldCheck size={15} color="var(--success-color)" />
+            <span className="mono">DETERMINISTIC ENGINE • TELEGRAM NATIVE</span>
           </div>
 
-          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
-            <Link to="/connect-telegram" className="button-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '1rem 2rem', fontSize: '1.1rem' }}>
-              <MessageSquare size={20} />
+          <h1 className="hero-title" style={{ marginBottom: '1.35rem' }}>
+            <span className="text-gradient">Market intelligence.</span>
+            <br />
+            Delivered only when rules align.
+          </h1>
+
+          <p style={{ fontSize: '1.15rem', color: 'var(--text-muted)', marginBottom: '2.25rem', maxWidth: '520px', lineHeight: 1.65 }}>
+            Axnna continuously maps <strong style={{ color: 'var(--text-color)' }}>1H</strong> structure and <strong style={{ color: 'var(--text-color)' }}>5M</strong> liquidity setups across EURUSD, GBPUSD, USDJPY, and XAUUSD—vetting macroeconomic event risk before sending setups scoring <span className="mono">65+</span> straight to Telegram.
+          </p>
+
+          <div style={{ display: 'flex', gap: '0.85rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            <Link to="/connect-telegram" className="button-primary" style={{ padding: '0.9rem 1.75rem', fontSize: '1rem' }}>
+              <MessageSquare size={18} />
               Connect to Telegram
             </Link>
-            <a href="#how-it-works" className="button-secondary" style={{ padding: '1rem 2rem', fontSize: '1.1rem' }}>
+            <a href="#how-it-works" className="button-secondary" style={{ padding: '0.9rem 1.75rem', fontSize: '1rem' }}>
               How it works
             </a>
           </div>
-
-          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '3rem' }}>
-            {[0, 1, 2].map((i) => (
-              <button
-                key={i}
-                onClick={() => setActiveIndex(i)}
-                style={{ width: '40px', height: '4px', borderRadius: '2px', backgroundColor: activeIndex === i ? 'var(--text-color)' : 'var(--border-color)', border: 'none', cursor: 'pointer', transition: 'background-color 0.3s' }}
-                aria-label={`Switch to slide ${i + 1}`}
-              />
-            ))}
-          </div>
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'center', minHeight: '400px', alignItems: 'center' }}>
-          <div key={`visual-${activeIndex}`} className="axnna-fade-in" style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
-            {states[activeIndex].visual}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1.25rem' }}>
+          <div style={{ display: 'inline-flex', gap: '0.35rem', padding: '0.3rem', borderRadius: '10px', backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)' }} role="tablist" aria-label="Pipeline preview stages">
+            {stages.map((stage, i) => (
+              <button
+                key={stage.label}
+                type="button"
+                role="tab"
+                aria-selected={activeIndex === i}
+                onClick={() => {
+                  setUserSelected(true);
+                  setActiveIndex(i);
+                }}
+                className="mono"
+                style={{
+                  padding: '0.45rem 0.8rem',
+                  borderRadius: '7px',
+                  border: 'none',
+                  fontSize: '0.78rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  backgroundColor: activeIndex === i ? 'var(--surface-elevated)' : 'transparent',
+                  color: activeIndex === i ? 'var(--text-color)' : 'var(--text-muted)',
+                  borderBottom: activeIndex === i ? '2px solid var(--accent-color)' : '2px solid transparent',
+                }}
+              >
+                {stage.label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'center', width: '100%', minHeight: '380px', alignItems: 'center' }}>
+            <div key={`visual-${activeIndex}`} className="axnna-fade-in" style={{ width: '100%', display: 'flex', justifyContent: 'center' }}>
+              {stages[activeIndex].visual}
+            </div>
           </div>
         </div>
       </div>

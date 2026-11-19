@@ -3,6 +3,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import Status from '../src/pages/Status';
 import Contact from '../src/pages/Contact';
+import FAQ from '../src/pages/FAQ';
 
 describe('Stage C Interactive UI Tests', () => {
   beforeEach(() => {
@@ -45,6 +46,44 @@ describe('Stage C Interactive UI Tests', () => {
     await waitFor(() => {
       expect(screen.getByText(/HTTP 503/)).toBeTruthy();
     });
+  });
+
+  it('Status page maps idle Notification Retries to OPERATIONAL when all core systems are healthy', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            overallStatus: 'INITIALIZING',
+            checkedAt: '2026-11-19T00:36:02.000Z',
+            monitoredInstruments: ['EURUSD', 'GBPUSD', 'USDJPY', 'XAUUSD'],
+            subsystems: [
+              { name: 'Market Data (TwelveData + Tiingo)', status: 'HEALTHY', lastUpdated: '2026-11-19T00:30:18.000Z' },
+              { name: 'Notification Retries', status: 'UNKNOWN', lastUpdated: null },
+            ],
+          }),
+          { status: 200 }
+        )
+      )
+    );
+
+    render(<Status />);
+    await waitFor(() => {
+      expect(screen.getAllByText('OPERATIONAL').length).toBeGreaterThan(0);
+    });
+    expect(screen.getByText('IDLE (0 QUEUED)')).toBeTruthy();
+  });
+
+  it('FAQ renders accessible collapsible accordions', () => {
+    render(<FAQ />);
+    const firstTrigger = screen.getByRole('button', { name: /What is Axnna\?/i });
+    const secondTrigger = screen.getByRole('button', { name: /How does Axnna work\?/i });
+    expect(firstTrigger.getAttribute('aria-expanded')).toBe('true');
+    expect(secondTrigger.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(secondTrigger);
+    expect(firstTrigger.getAttribute('aria-expanded')).toBe('false');
+    expect(secondTrigger.getAttribute('aria-expanded')).toBe('true');
   });
 
   it('Contact page renders only a Give Feedback button linking to Telegram without exposing username text', () => {
