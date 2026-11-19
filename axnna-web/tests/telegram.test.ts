@@ -22,7 +22,16 @@ describe('Telegram Pairing, Webhook Security & Delivery Reliability', () => {
     vi.unstubAllGlobals();
   });
 
-  it('creates a pairing session, polls PENDING, expires when past deadline, and connects via authenticated webhook', async () => {
+  it('creates a pairing session, notifies existing users if already connected, supports /disconnect & web disconnect, and reconnects cleanly', async () => {
+    const botMessages: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_u: string, init?: RequestInit) => {
+        botMessages.push(JSON.parse(String(init?.body || '{}')).text);
+        return new Response(JSON.stringify({ ok: true, result: { message_id: botMessages.length } }), { status: 200 });
+      })
+    );
+
     // 1. Create pairing session
     const createRes = await worker.fetch(
       new Request('https://axnna.example/api/telegram/session', { method: 'POST' }),
@@ -40,7 +49,7 @@ describe('Telegram Pairing, Webhook Security & Delivery Reliability', () => {
     expect(pollRes1.status).toBe(200);
     expect(await pollRes1.json()).toEqual({ status: 'PENDING' });
 
-    // 3. Valid webhook /start connects user and marks session CONNECTED
+    // 3. Valid webhook /start connects user, marks session CONNECTED, and sends welcome message
     const webhookRes = await worker.fetch(
       new Request('https://axnna.example/api/telegram/webhook', {
         method: 'POST',
@@ -60,6 +69,7 @@ describe('Telegram Pairing, Webhook Security & Delivery Reliability', () => {
       env
     );
     expect(webhookRes.status).toBe(200);
+    expect(botMessages.at(-1)).toContain('Connected to Axnna!');
 
     const pollRes2 = await worker.fetch(
       new Request(`https://axnna.example/api/telegram/session/${token}`),
@@ -67,7 +77,12 @@ describe('Telegram Pairing, Webhook Security & Delivery Reliability', () => {
     );
     expect(await pollRes2.json()).toEqual({ status: 'CONNECTED' });
 
-    // 4. Duplicate /start does not create duplicate axnna_users
+    // 4. Re-connecting from another session notifies user inside Telegram without creating duplicate user rows
+    const createRes2 = await worker.fetch(
+      new Request('https://axnna.example/api/telegram/session', { method: 'POST' }),
+      env
+    );
+    const { token: token2 } = (await createRes2.json()) as { token: string };
     await worker.fetch(
       new Request('https://axnna.example/api/telegram/webhook', {
         method: 'POST',
@@ -78,7 +93,7 @@ describe('Telegram Pairing, Webhook Security & Delivery Reliability', () => {
         body: JSON.stringify({
           update_id: 2,
           message: {
-            text: `/start ${token}`,
+            text: `/start ${token2}`,
             from: { id: 555001, username: 'trader_one' },
             chat: { id: 555001, type: 'private' },
           },
@@ -88,6 +103,70 @@ describe('Telegram Pairing, Webhook Security & Delivery Reliability', () => {
     );
     const userCount = sqlite.prepare(`SELECT COUNT(*) as cnt FROM axnna_users`).get() as any;
     expect(userCount.cnt).toBe(1);
+    expect(botMessages.at(-1)).toContain('already connected to Axnna');
+
+    // 5. Disconnecting via /disconnect disables alerts and updates session poll state to DISCONNECTED
+    await worker.fetch(
+      new Request('https://axnna.example/api/telegram/webhook', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Telegram-Bot-Api-Secret-Token': 'test-webhook-secret-token',
+        },
+        body: JSON.stringify({
+          update_id: 3,
+          message: { text: '/disconnect', from: { id: 555001 }, chat: { id: 555001 } },
+        }),
+      }),
+      env
+    );
+    expect(botMessages.at(-1)).toContain('Disconnected from Axnna');
+    const userAfterDc = sqlite.prepare(`SELECT status, signal_notifications_enabled, disconnected_at FROM axnna_users WHERE telegram_user_id = '555001'`).get() as any;
+    expect(userAfterDc.status).toBe('DISCONNECTED');
+    expect(userAfterDc.signal_notifications_enabled).toBe(0);
+    expect(userAfterDc.disconnected_at).toBeTruthy();
+
+    const pollAfterDc = await worker.fetch(
+      new Request(`https://axnna.example/api/telegram/session/${token2}`),
+      env
+    );
+    expect(await pollAfterDc.json()).toEqual({ status: 'DISCONNECTED' });
+
+    // 6. Reconnecting resets signal_notifications_enabled = 1 and clears disconnected_at, and web disconnect works too
+    const createRes3 = await worker.fetch(
+      new Request('https://axnna.example/api/telegram/session', { method: 'POST' }),
+      env
+    );
+    const { token: token3 } = (await createRes3.json()) as { token: string };
+    await worker.fetch(
+      new Request('https://axnna.example/api/telegram/webhook', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Telegram-Bot-Api-Secret-Token': 'test-webhook-secret-token',
+        },
+        body: JSON.stringify({
+          update_id: 4,
+          message: { text: `/start ${token3}`, from: { id: 555001 }, chat: { id: 555001 } },
+        }),
+      }),
+      env
+    );
+    const userReconnected = sqlite.prepare(`SELECT status, signal_notifications_enabled, disconnected_at FROM axnna_users WHERE telegram_user_id = '555001'`).get() as any;
+    expect(userReconnected).toEqual({ status: 'CONNECTED', signal_notifications_enabled: 1, disconnected_at: null });
+
+    const webDcRes = await worker.fetch(
+      new Request('https://axnna.example/api/telegram/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token3 }),
+      }),
+      env
+    );
+    expect(webDcRes.status).toBe(200);
+    expect(await webDcRes.json()).toEqual({ status: 'DISCONNECTED' });
+    const userAfterWebDc = sqlite.prepare(`SELECT status, signal_notifications_enabled FROM axnna_users WHERE telegram_user_id = '555001'`).get() as any;
+    expect(userAfterWebDc).toEqual({ status: 'DISCONNECTED', signal_notifications_enabled: 0 });
   });
 
   it('expires pending sessions on poll when deadline passes and rejects expired/unknown pairing codes', async () => {

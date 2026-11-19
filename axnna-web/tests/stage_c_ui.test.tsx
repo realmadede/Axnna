@@ -7,6 +7,7 @@ import Contact from '../src/pages/Contact';
 import FAQ from '../src/pages/FAQ';
 import Strategies from '../src/pages/Strategies';
 import Landing from '../src/pages/Landing';
+import ConnectTelegram from '../src/pages/ConnectTelegram';
 
 describe('Stage C Interactive UI Tests', () => {
   beforeEach(() => {
@@ -15,6 +16,7 @@ describe('Stage C Interactive UI Tests', () => {
 
   afterEach(() => {
     cleanup();
+    localStorage.clear();
     vi.unstubAllGlobals();
   });
 
@@ -151,5 +153,27 @@ describe('Stage C Interactive UI Tests', () => {
     expect(screen.getByText('Why Axnna')).toBeTruthy();
     expect(screen.getByText('Fail-closed macro veto')).toBeTruthy();
     expect(screen.getByText('Axnna: Fail-closed macro veto')).toBeTruthy();
+  });
+
+  it('ConnectTelegram detects saved CONNECTED session, shows Already Connected, and supports web Disconnect', async () => {
+    localStorage.setItem('axnna_tg_session_token', 'tok_saved_1');
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'CONNECTED' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'DISCONNECTED' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    render(<ConnectTelegram />);
+    await waitFor(() => {
+      expect(screen.getByText('Already Connected')).toBeTruthy();
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0][0])).toContain('/api/telegram/session/tok_saved_1');
+
+    fireEvent.click(screen.getByRole('button', { name: /Disconnect Telegram/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Telegram Disconnected')).toBeTruthy();
+    });
+    expect(localStorage.getItem('axnna_tg_session_token')).toBeNull();
   });
 });

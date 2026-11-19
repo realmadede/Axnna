@@ -5,6 +5,7 @@ import {
   checkD1RateLimit,
   finishJobRun,
   getRequestActorHash,
+  hasRealSecret,
   recordSecurityEvent,
   releaseNamedLease,
   startJobRun,
@@ -636,7 +637,20 @@ export async function retryFailedDailyRecaps(env: Env, targetDate?: string): Pro
   return recovered;
 }
 
-export async function handleCreateSession(env: Env, headers: Record<string, string>): Promise<Response> {
+export async function handleCreateSession(
+  request: Request,
+  env: Env,
+  headers: Record<string, string>
+): Promise<Response> {
+  const actorHash = await getRequestActorHash(request, env, 'telegram');
+  const limitRes = await checkD1RateLimit(env.DB, `tg_session:${actorHash}`, 15, 3600);
+  if (!limitRes.allowed) {
+    return Response.json(
+      { error: 'Too many connection requests. Please wait before trying again.' },
+      { status: 429, headers: { ...headers, 'Retry-After': String(limitRes.retryAfterSec) } }
+    );
+  }
+
   const token = crypto.randomUUID();
   const sessionId = crypto.randomUUID();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -654,11 +668,20 @@ export async function handlePollSession(env: Env, url: URL, headers: Record<stri
   const token = url.pathname.split('/').pop();
   if (!token) return new Response('Bad Request', { status: 400, headers });
 
-  const session = (await env.DB.prepare(
-    `SELECT id, status, expires_at FROM telegram_connection_sessions WHERE connection_token = ?`
-  )
+  const session = (await env.DB.prepare(`
+    SELECT s.id, s.status, s.expires_at, s.axnna_user_id, u.status AS user_status
+    FROM telegram_connection_sessions s
+    LEFT JOIN axnna_users u ON u.id = s.axnna_user_id
+    WHERE s.connection_token = ?
+  `)
     .bind(token)
-    .first()) as { id?: string; status?: string; expires_at?: string } | null;
+    .first()) as {
+    id?: string;
+    status?: string;
+    expires_at?: string;
+    axnna_user_id?: string | null;
+    user_status?: string | null;
+  } | null;
 
   if (!session) {
     return Response.json({ status: 'NOT_FOUND' }, { status: 404, headers });
@@ -673,7 +696,93 @@ export async function handlePollSession(env: Env, url: URL, headers: Record<stri
     return Response.json({ status: 'EXPIRED' }, { headers });
   }
 
+  if (session.status === 'CANCELLED' || (session.status === 'CONNECTED' && session.user_status === 'DISCONNECTED')) {
+    return Response.json({ status: 'DISCONNECTED' }, { headers });
+  }
+
   return Response.json({ status: session.status }, { headers });
+}
+
+async function disconnectAxnnaUser(
+  env: Env,
+  axnnaUserId: string,
+  telegramChatId: string | null,
+  actorSource: 'TELEGRAM_WEBHOOK' | 'WEB_DISCONNECT',
+  telegramNoticeText: string
+): Promise<boolean> {
+  const now = new Date().toISOString();
+  const updateRes = await env.DB.prepare(`
+    UPDATE axnna_users
+    SET status = 'DISCONNECTED',
+        signal_notifications_enabled = 0,
+        disconnected_at = ?,
+        updated_at = ?
+    WHERE id = ? AND status = 'CONNECTED'
+  `)
+    .bind(now, now, axnnaUserId)
+    .run();
+
+  if (Number(updateRes?.meta?.changes ?? 0) === 0) {
+    return false;
+  }
+
+  await env.DB.prepare(`
+    UPDATE telegram_connection_sessions
+    SET status = 'CANCELLED'
+    WHERE axnna_user_id = ? AND status = 'CONNECTED'
+  `)
+    .bind(axnnaUserId)
+    .run();
+
+  await env.DB.prepare(`
+    INSERT INTO audit_events (event_id, event_type, axnna_user_id, actor_source)
+    VALUES (?, 'TELEGRAM_DISCONNECTED', ?, ?)
+  `)
+    .bind(crypto.randomUUID(), axnnaUserId, actorSource)
+    .run();
+
+  if (telegramChatId && hasRealSecret(env.TELEGRAM_BOT_TOKEN)) {
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, telegramChatId, telegramNoticeText);
+  }
+
+  return true;
+}
+
+export async function handleDisconnectSession(
+  request: Request,
+  env: Env,
+  headers: Record<string, string>
+): Promise<Response> {
+  const parsed = await readJsonBodyWithLimit(request, 2048);
+  if (!parsed.ok) {
+    return Response.json({ error: parsed.error }, { status: parsed.status, headers });
+  }
+
+  const token = typeof parsed.data.token === 'string' ? parsed.data.token.trim() : '';
+  if (!token || token.length > 128) {
+    return Response.json({ error: 'Valid connection token is required.' }, { status: 400, headers });
+  }
+
+  const session = (await env.DB.prepare(`
+    SELECT s.axnna_user_id, u.telegram_chat_id
+    FROM telegram_connection_sessions s
+    JOIN axnna_users u ON u.id = s.axnna_user_id
+    WHERE s.connection_token = ? AND s.status = 'CONNECTED'
+  `)
+    .bind(token)
+    .first()) as { axnna_user_id?: string; telegram_chat_id?: string | null } | null;
+
+  if (session?.axnna_user_id) {
+    await disconnectAxnnaUser(
+      env,
+      session.axnna_user_id,
+      session.telegram_chat_id ?? null,
+      'WEB_DISCONNECT',
+      'Disconnected from Axnna via web. Signal notifications and Daily Recaps have been stopped.'
+    );
+  }
+
+  return Response.json({ status: 'DISCONNECTED' }, { headers });
 }
 
 async function handleTelegramStatusCommand(
@@ -730,6 +839,50 @@ async function handleTelegramRecapCommand(env: Env, telegramUserId: string, chat
   await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, text);
 }
 
+async function handleTelegramBareStartCommand(env: Env, telegramUserId: string, chatId: string): Promise<void> {
+  if (!hasRealSecret(env.TELEGRAM_BOT_TOKEN)) return;
+
+  const user = (await env.DB.prepare(
+    `SELECT status FROM axnna_users WHERE telegram_user_id = ?`
+  )
+    .bind(telegramUserId)
+    .first()) as { status?: string } | null;
+
+  const text =
+    user?.status === 'CONNECTED'
+      ? 'You are already connected to Axnna. Signal notifications are active.\nCommands: /status [PAIR], /recap, /disconnect'
+      : 'Welcome to Axnna. Open https://axnna.madede.workers.dev/connect-telegram to link your Telegram account.';
+
+  await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, chatId, text);
+}
+
+async function handleTelegramDisconnectCommand(env: Env, telegramUserId: string, chatId: string): Promise<void> {
+  const user = (await env.DB.prepare(
+    `SELECT id, status FROM axnna_users WHERE telegram_user_id = ?`
+  )
+    .bind(telegramUserId)
+    .first()) as { id?: string; status?: string } | null;
+
+  if (!user?.id || user.status !== 'CONNECTED') {
+    if (hasRealSecret(env.TELEGRAM_BOT_TOKEN)) {
+      await sendTelegramMessage(
+        env.TELEGRAM_BOT_TOKEN,
+        chatId,
+        'Your Telegram account is not currently connected to Axnna.'
+      );
+    }
+    return;
+  }
+
+  await disconnectAxnnaUser(
+    env,
+    user.id,
+    chatId,
+    'TELEGRAM_WEBHOOK',
+    'Disconnected from Axnna. Signal alerts and Daily Recaps have been stopped. Reconnect anytime at /connect-telegram.'
+  );
+}
+
 async function processTelegramConnection(
   env: Env,
   token: string,
@@ -763,16 +916,25 @@ async function processTelegramConnection(
   const lastName = typeof from.last_name === 'string' ? from.last_name : null;
   const now = new Date().toISOString();
 
-  const existing = (await env.DB.prepare(`SELECT id FROM axnna_users WHERE telegram_user_id = ?`)
+  const existing = (await env.DB.prepare(`SELECT id, status FROM axnna_users WHERE telegram_user_id = ?`)
     .bind(telegramUserId)
-    .first()) as { id?: string } | null;
+    .first()) as { id?: string; status?: string } | null;
 
+  const wasAlreadyConnected = existing?.status === 'CONNECTED';
   let axnnaUserId: string = userId;
   if (existing && typeof existing.id === 'string') {
     axnnaUserId = existing.id;
     await env.DB.prepare(`
       UPDATE axnna_users
-      SET status = 'CONNECTED', telegram_chat_id = ?, telegram_username_snapshot = ?, telegram_first_name_snapshot = ?, telegram_last_name_snapshot = ?, last_seen_at = ?, updated_at = ?
+      SET status = 'CONNECTED',
+          signal_notifications_enabled = 1,
+          disconnected_at = NULL,
+          telegram_chat_id = ?,
+          telegram_username_snapshot = ?,
+          telegram_first_name_snapshot = ?,
+          telegram_last_name_snapshot = ?,
+          last_seen_at = ?,
+          updated_at = ?
       WHERE telegram_user_id = ?
     `)
       .bind(telegramChatId, username, firstName, lastName, now, now, telegramUserId)
@@ -800,10 +962,21 @@ async function processTelegramConnection(
 
   await env.DB.prepare(`
     INSERT INTO audit_events (event_id, event_type, axnna_user_id, actor_source)
-    VALUES (?, 'TELEGRAM_CONNECTION_COMPLETED', ?, 'TELEGRAM_WEBHOOK')
+    VALUES (?, ?, ?, 'TELEGRAM_WEBHOOK')
   `)
-    .bind(crypto.randomUUID(), axnnaUserId)
+    .bind(
+      crypto.randomUUID(),
+      wasAlreadyConnected ? 'TELEGRAM_RECONNECT_ALREADY_CONNECTED' : 'TELEGRAM_CONNECTION_COMPLETED',
+      axnnaUserId
+    )
     .run();
+
+  if (hasRealSecret(env.TELEGRAM_BOT_TOKEN)) {
+    const welcomeText = wasAlreadyConnected
+      ? 'You are already connected to Axnna. Signal notifications are active.\nCommands: /status [PAIR], /recap, /disconnect'
+      : 'Connected to Axnna! Signal notifications and Daily Recaps are now active.\nCommands: /status [PAIR], /recap, /disconnect';
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, telegramChatId, welcomeText);
+  }
 }
 
 export async function handleTelegramWebhook(request: Request, env: Env): Promise<Response> {
@@ -879,7 +1052,13 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
       if (token && token.length <= 128) {
         await processTelegramConnection(env, token, from, chat);
       }
-    } else if (command === 'status' || command === 'recap') {
+    } else if (
+      command === 'start' ||
+      command === 'status' ||
+      command === 'recap' ||
+      command === 'disconnect' ||
+      command === 'stop'
+    ) {
       const cmdRate = await checkD1RateLimit(env.DB, `tg_cmd:${String(from.id)}`, 10, 300);
       if (!cmdRate.allowed) {
         await recordSecurityEvent(env.DB, {
@@ -891,10 +1070,14 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
         });
         return Response.json({ ok: true, rateLimited: true }, { status: 200 });
       }
-      if (command === 'status') {
+      if (command === 'start') {
+        await handleTelegramBareStartCommand(env, String(from.id), String(chat.id));
+      } else if (command === 'status') {
         await handleTelegramStatusCommand(env, argStr, String(from.id), String(chat.id));
-      } else {
+      } else if (command === 'recap') {
         await handleTelegramRecapCommand(env, String(from.id), String(chat.id));
+      } else {
+        await handleTelegramDisconnectCommand(env, String(from.id), String(chat.id));
       }
     }
   }

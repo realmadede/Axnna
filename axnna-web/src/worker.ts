@@ -12,6 +12,7 @@ import { runStrategyEngine, runSynchronization } from './worker/sync';
 import {
   deliverTelegramAlerts,
   handleCreateSession,
+  handleDisconnectSession,
   handlePollSession,
   handleTelegramWebhook,
   retryFailedDailyRecaps,
@@ -52,10 +53,13 @@ export default {
     }
 
     if (url.pathname === '/api/telegram/session' && request.method === 'POST') {
-      return await handleCreateSession(env, corsHeaders);
+      return await handleCreateSession(request, env, corsHeaders);
     }
     if (url.pathname.startsWith('/api/telegram/session/') && request.method === 'GET') {
       return await handlePollSession(env, url, corsHeaders);
+    }
+    if (url.pathname === '/api/telegram/disconnect' && request.method === 'POST') {
+      return await handleDisconnectSession(request, env, corsHeaders);
     }
     if (url.pathname === '/api/telegram/webhook' && request.method === 'POST') {
       return await handleTelegramWebhook(request, env);
