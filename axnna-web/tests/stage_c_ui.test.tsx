@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import Status from '../src/pages/Status';
 import Contact from '../src/pages/Contact';
 import FAQ from '../src/pages/FAQ';
+import Strategies from '../src/pages/Strategies';
 
 describe('Stage C Interactive UI Tests', () => {
   beforeEach(() => {
@@ -93,5 +94,47 @@ describe('Stage C Interactive UI Tests', () => {
     expect(link.getAttribute('target')).toBe('_blank');
     expect(screen.queryByText(/mad_ede/i)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Send Feedback' })).toBeNull();
+  });
+
+  it('Strategies page renders SetupDiagram SVG and live forward performance breakdown from /api/performance', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            mode: 'FORWARD_PAPER_SIMULATION',
+            generatedAt: '2026-11-19T01:00:00.000Z',
+            summary: {
+              totalTrackedSetups: 3,
+              openTrades: 1,
+              pendingTrades: 0,
+              closedTrades: 2,
+              expiredOrCancelled: 0,
+              wins: 1,
+              losses: 1,
+              winRate: 50,
+              totalR: 0.9,
+              averageR: 0.45,
+            },
+            byInstrument: [
+              { instrument: 'EURUSD', closedTrades: 1, wins: 1, losses: 0, winRate: 100, totalR: 1.9, averageR: 1.9 },
+            ],
+            byScoreBand: [
+              { band: '75-84', closedTrades: 1, wins: 1, losses: 0, winRate: 100, averageR: 1.9 },
+            ],
+          }),
+          { status: 200 }
+        )
+      )
+    );
+
+    render(<Strategies />);
+    expect(screen.getByRole('img', { name: /liquidity sweep/i })).toBeTruthy();
+
+    await waitFor(() => {
+      expect(screen.getByText('50%')).toBeTruthy();
+    });
+    expect(screen.getByText('+0.9R')).toBeTruthy();
+    expect(screen.getByText('Score 75-84')).toBeTruthy();
   });
 });

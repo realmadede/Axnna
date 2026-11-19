@@ -3,6 +3,7 @@ import { evaluateInstrumentFundamentalContext } from './worker/fundamentals';
 import {
   buildCorsHeaders,
   handleBacktestRun,
+  handlePublicPerformance,
   handlePublicStatus,
   isOriginAllowed,
   readJsonBodyWithLimit,
@@ -44,6 +45,10 @@ export default {
 
     if (url.pathname === '/api/status' && request.method === 'GET') {
       return await handlePublicStatus(env, corsHeaders);
+    }
+
+    if (url.pathname === '/api/performance' && request.method === 'GET') {
+      return await handlePublicPerformance(env, corsHeaders);
     }
 
     if (url.pathname === '/api/telegram/session' && request.method === 'POST') {

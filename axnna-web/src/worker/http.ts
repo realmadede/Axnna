@@ -155,6 +155,133 @@ export async function handlePublicStatus(env: Env, corsHeaders: Record<string, s
   }
 }
 
+interface PerformanceTradeRow {
+  instrument: string;
+  status: string;
+  outcome: string | null;
+  r_multiple: number | null;
+  technical_score: number | null;
+}
+
+interface PerformanceBucketAccumulator {
+  closedTrades: number;
+  wins: number;
+  losses: number;
+  totalR: number;
+}
+
+function finalizeBucket<K extends string>(keyName: K, keyValue: string, bucket: PerformanceBucketAccumulator) {
+  return {
+    [keyName]: keyValue,
+    closedTrades: bucket.closedTrades,
+    wins: bucket.wins,
+    losses: bucket.losses,
+    winRate: bucket.closedTrades > 0 ? Number(((bucket.wins / bucket.closedTrades) * 100).toFixed(1)) : null,
+    totalR: Number(bucket.totalR.toFixed(2)),
+    averageR: bucket.closedTrades > 0 ? Number((bucket.totalR / bucket.closedTrades).toFixed(2)) : null,
+  };
+}
+
+function resolveScoreBand(score: number | null): '65-74' | '75-84' | '85+' {
+  const n = Number(score ?? 65);
+  if (n >= 85) return '85+';
+  if (n >= 75) return '75-84';
+  return '65-74';
+}
+
+export async function handlePublicPerformance(env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  try {
+    const { results } = (await env.DB.prepare(
+      `SELECT pt.instrument, pt.status, pt.outcome, pt.r_multiple, s.technical_score
+       FROM paper_trades pt
+       LEFT JOIN signals s ON s.signal_id = pt.signal_id
+       ORDER BY pt.signal_timestamp DESC
+       LIMIT 500`
+    ).all()) as { results: PerformanceTradeRow[] };
+
+    let openTrades = 0;
+    let pendingTrades = 0;
+    let closedTrades = 0;
+    let expiredOrCancelled = 0;
+    let wins = 0;
+    let losses = 0;
+    let totalR = 0;
+
+    const instBuckets = new Map<string, PerformanceBucketAccumulator>(
+      SUPPORTED_INSTRUMENTS.map((inst) => [inst, { closedTrades: 0, wins: 0, losses: 0, totalR: 0 }])
+    );
+    const bandKeys: Array<'65-74' | '75-84' | '85+'> = ['65-74', '75-84', '85+'];
+    const bandBuckets = new Map<'65-74' | '75-84' | '85+', PerformanceBucketAccumulator>(
+      bandKeys.map((band) => [band, { closedTrades: 0, wins: 0, losses: 0, totalR: 0 }])
+    );
+
+    const rows = results || [];
+    for (const row of rows) {
+      if (row.status === 'PENDING_ENTRY') {
+        pendingTrades++;
+        continue;
+      }
+      if (row.status === 'ACTIVE_TRADE') {
+        openTrades++;
+        continue;
+      }
+      if (row.status !== 'TARGET_HIT' && row.status !== 'STOP_HIT') {
+        expiredOrCancelled++;
+        continue;
+      }
+
+      closedTrades++;
+      const r = Number(row.r_multiple ?? 0);
+      totalR += r;
+      if (row.outcome === 'WIN') wins++;
+      if (row.outcome === 'LOSS') losses++;
+
+      const instAcc = instBuckets.get(row.instrument) || { closedTrades: 0, wins: 0, losses: 0, totalR: 0 };
+      instAcc.closedTrades++;
+      if (row.outcome === 'WIN') instAcc.wins++;
+      if (row.outcome === 'LOSS') instAcc.losses++;
+      instAcc.totalR += r;
+      instBuckets.set(row.instrument, instAcc);
+
+      const band = resolveScoreBand(row.technical_score);
+      const bandAcc = bandBuckets.get(band)!;
+      bandAcc.closedTrades++;
+      if (row.outcome === 'WIN') bandAcc.wins++;
+      if (row.outcome === 'LOSS') bandAcc.losses++;
+      bandAcc.totalR += r;
+    }
+
+    return Response.json(
+      {
+        mode: 'FORWARD_PAPER_SIMULATION',
+        generatedAt: new Date().toISOString(),
+        summary: {
+          totalTrackedSetups: rows.length,
+          openTrades,
+          pendingTrades,
+          closedTrades,
+          expiredOrCancelled,
+          wins,
+          losses,
+          winRate: closedTrades > 0 ? Number(((wins / closedTrades) * 100).toFixed(1)) : null,
+          totalR: Number(totalR.toFixed(2)),
+          averageR: closedTrades > 0 ? Number((totalR / closedTrades).toFixed(2)) : null,
+        },
+        byInstrument: SUPPORTED_INSTRUMENTS.map((inst) => finalizeBucket('instrument', inst, instBuckets.get(inst)!)),
+        byScoreBand: bandKeys.map((band) => finalizeBucket('band', band, bandBuckets.get(band)!)),
+      },
+      {
+        headers: {
+          ...corsHeaders,
+          'Cache-Control': 'public, max-age=300',
+        },
+      }
+    );
+  } catch {
+    return Response.json({ error: 'Performance metrics temporarily unavailable' }, { status: 503, headers: corsHeaders });
+  }
+}
+
 export async function handleBacktestRun(request: Request, env: Env, headers: Record<string, string>): Promise<Response> {
   const auth = request.headers.get('Authorization');
   if (!hasRealSecret(env.BACKTEST_SECRET) || !auth || !auth.startsWith('Bearer ')) {

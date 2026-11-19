@@ -40,8 +40,9 @@ database_name = "axnna_db_staging"
 database_id = "REPLACE_WITH_STAGING_D1_DATABASE_ID"
 migrations_dir = "./migrations"
 
+# Staging crons disabled by default so staging never doubles production TwelveData/D1 quota usage
 [env.staging.triggers]
-crons = ["*/15 * * * *", "2 * * * *", "0 21 * * *"]
+crons = []
 
 # ---------------------------------------------------------------------------
 # Production Environment (axnna.madede.workers.dev)

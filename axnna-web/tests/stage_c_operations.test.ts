@@ -249,4 +249,39 @@ describe('Stage C Unified Routing, Telemetry, Operations & Missing Features', ()
     const delRow = sqlite.prepare(`SELECT status FROM notification_deliveries WHERE id = 'del_retry_1'`).get() as any;
     expect(delRow.status).toBe('SENT');
   });
+
+  it('serves cached read-only GET /api/performance metrics aggregated by instrument and score band without writing D1', async () => {
+    sqlite.prepare(
+      `INSERT OR IGNORE INTO paper_accounts (id, name, starting_balance, current_balance, risk_per_trade_percent) VALUES ('acct_perf', 'Default', 10000, 10000, 1.0)`
+    ).run();
+    sqlite.prepare(
+      `INSERT INTO signals (signal_id, strategy_id, strategy_version, instrument, direction, generated_at, anchor_timeframe, execution_timeframe, entry, structural_stop, structural_target, structural_rr, status, technical_score)
+       VALUES
+         ('sig_p1', 'AXNNA_V1_LIQUIDITY_FVG', 'technical-v1', 'EURUSD', 'LONG', '2026-11-17T10:00:00Z', '1H', '5M', 1.10, 1.09, 1.12, 2.0, 'ALERTED', 78),
+         ('sig_p2', 'AXNNA_V1_LIQUIDITY_FVG', 'technical-v1', 'XAUUSD', 'SHORT', '2026-11-17T12:00:00Z', '1H', '5M', 2600, 2610, 2580, 2.0, 'ALERTED', 88)`
+    ).run();
+    sqlite.prepare(
+      `INSERT INTO paper_trades (id, account_id, signal_id, instrument, timeframe, direction, strategy_id, strategy_version, intended_entry, stop_loss, target_price, risk_amount, status, outcome, r_multiple, signal_timestamp)
+       VALUES
+         ('pt_1', 'acct_perf', 'sig_p1', 'EURUSD', '5M', 'LONG', 'AXNNA_V1_LIQUIDITY_FVG', 'technical-v1', 1.10, 1.09, 1.12, 100, 'TARGET_HIT', 'WIN', 1.9, '2026-11-17T10:00:00Z'),
+         ('pt_2', 'acct_perf', 'sig_p2', 'XAUUSD', '5M', 'SHORT', 'AXNNA_V1_LIQUIDITY_FVG', 'technical-v1', 2600, 2610, 2580, 100, 'STOP_HIT', 'LOSS', -1.0, '2026-11-17T12:00:00Z')`
+    ).run();
+
+    const res = await worker.fetch(new Request('https://staging.axnna.example/api/performance'), env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('public, max-age=300');
+
+    const body = (await res.json()) as any;
+    expect(body.summary).toMatchObject({
+      closedTrades: 2,
+      wins: 1,
+      losses: 1,
+      winRate: 50,
+      totalR: 0.9,
+      averageR: 0.45,
+    });
+    expect(body.byInstrument.find((r: any) => r.instrument === 'EURUSD')).toMatchObject({ closedTrades: 1, wins: 1, totalR: 1.9 });
+    expect(body.byScoreBand.find((r: any) => r.band === '75-84')).toMatchObject({ closedTrades: 1, wins: 1, winRate: 100 });
+    expect(body.byScoreBand.find((r: any) => r.band === '85+')).toMatchObject({ closedTrades: 1, losses: 1, winRate: 0 });
+  });
 });
