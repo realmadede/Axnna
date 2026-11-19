@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { TwelveDataMarketProvider } from '../src/providers/MarketProvider';
+import { TwelveDataMarketProvider, TiingoMarketProvider } from '../src/providers/MarketProvider';
 
 /**
  * Manual live-provider verification script (run via `npm run test:live`).
@@ -18,14 +18,23 @@ async function main() {
     }
   }
 
-  const key = process.env.TWELVEDATA_API_KEY;
-  if (!key) {
-    throw new Error('TWELVEDATA_API_KEY not found in environment or .dev.vars');
+  const tdKey = process.env.TWELVEDATA_API_KEY;
+  const tiingoKey = process.env.TIINGO_API_KEY;
+  if (!tdKey && !tiingoKey) {
+    throw new Error('TWELVEDATA_API_KEY or TIINGO_API_KEY not found in environment or .dev.vars');
   }
 
-  const provider = new TwelveDataMarketProvider(key);
-  const candles = await provider.fetchCandles('EURUSD', '5M', 2);
-  console.log(`Fetched ${candles.length} live EURUSD 5M candles.`);
+  if (tdKey) {
+    const provider = new TwelveDataMarketProvider(tdKey);
+    const candles = await provider.fetchCandles('EURUSD', '5M', 2);
+    console.log(`Fetched ${candles.length} live TwelveData EURUSD 5M candles.`);
+  }
+
+  if (tiingoKey) {
+    const fallback = new TiingoMarketProvider(tiingoKey);
+    const candles = await fallback.fetchCandles('EURUSD', '5M', 2);
+    console.log(`Fetched ${candles.length} live Tiingo EURUSD 5M candles.`);
+  }
 }
 
 main().catch((err) => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { TwelveDataMarketProvider } from '../MarketProvider';
+import { TiingoMarketProvider, TwelveDataMarketProvider } from '../MarketProvider';
 import { MarketDataValidator } from '../../core-engine/MarketData';
 
 describe('TwelveDataMarketProvider', () => {
@@ -228,5 +228,76 @@ describe('TwelveDataMarketProvider', () => {
     failChunkPromise.catch(() => {});
     await vi.runAllTimersAsync();
     await expect(failChunkPromise).rejects.toThrow('Failed chunked fetch after 3 attempts');
+  });
+});
+
+describe('TiingoMarketProvider', () => {
+  let provider: TiingoMarketProvider;
+
+  beforeEach(() => {
+    provider = new TiingoMarketProvider('fake_tiingo_token');
+    vi.stubGlobal('fetch', vi.fn());
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('rejects missing, whitespace, or placeholder API keys', () => {
+    expect(() => new TiingoMarketProvider('')).toThrow('Tiingo API key is required');
+    expect(() => new TiingoMarketProvider('   ')).toThrow('Tiingo API key is required');
+    expect(() => new TiingoMarketProvider('mock_key')).toThrow('Tiingo API key is required');
+    expect(() => new TiingoMarketProvider('your_tiingo_key_here')).toThrow('Tiingo API key is required');
+  });
+
+  it('fetches XAUUSD 1H and EURUSD 5M bars with Token auth header and bounded limit', async () => {
+    const mockNow = new Date('2026-11-17T12:08:00.000Z').getTime();
+    vi.setSystemTime(mockNow);
+
+    const tiingoRows = [
+      { date: '2026-11-17T11:55:00.000Z', open: 1.09, high: 1.092, low: 1.089, close: 1.091 },
+      { date: '2026-11-17T12:00:00.000Z', open: 1.091, high: 1.093, low: 1.09, close: 1.092 },
+      { date: '2026-11-17T12:05:00.000Z', open: 1.092, high: 1.094, low: 1.091, close: 1.093 },
+    ];
+
+    (globalThis.fetch as any).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => tiingoRows,
+    });
+
+    const candles = await provider.fetchCandles('EURUSD', '5M', 2);
+    expect(candles).toHaveLength(2);
+    expect(candles[0].isCompleted).toBe(true);
+    expect(candles[1].isCompleted).toBe(false);
+    expect(candles[0].timestamp).toBe(new Date('2026-11-17T12:00:00.000Z').getTime());
+
+    const [calledUrl, init] = (globalThis.fetch as any).mock.calls[0];
+    expect(calledUrl).toContain('https://api.tiingo.com/tiingo/fx/eurusd/prices?startDate=');
+    expect(calledUrl).toContain('resampleFreq=5min');
+    expect(init.headers.Authorization).toBe('Token fake_tiingo_token');
+
+    (globalThis.fetch as any).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => [{ date: '2026-11-17T10:00:00.000Z', open: 2610, high: 2615, low: 2608, close: 2612 }],
+    });
+    const xau = await provider.fetchCandles('XAUUSD', '1H', 10);
+    expect(xau).toHaveLength(1);
+    expect((globalThis.fetch as any).mock.calls[1][0]).toContain('/tiingo/fx/xauusd/prices');
+    expect((globalThis.fetch as any).mock.calls[1][0]).toContain('resampleFreq=1hour');
+  });
+
+  it('does not retry authentication failures', async () => {
+    (globalThis.fetch as any).mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+    });
+
+    await expect(provider.fetchCandles('GBPUSD', '5M', 10)).rejects.toThrow('Authentication failure (HTTP Error 401)');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 });

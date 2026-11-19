@@ -592,4 +592,79 @@ describe('Stage D.2 Consolidated Release-Blocking Remediation Suite', () => {
       (sqlite.prepare(`SELECT COUNT(*) as c FROM scheduled_job_runs WHERE job_name = 'DAILY_RECAP' AND status = 'SUCCEEDED'`).get() as any).c
     ).toBe(1);
   });
+
+  it('automatically fails over to Tiingo when TwelveData rate-limits (429) and records accurate provider health', async () => {
+    vi.useFakeTimers();
+    const tuesdayNoonUtc = new Date('2026-11-17T12:00:00.000Z').getTime();
+    vi.setSystemTime(tuesdayNoonUtc);
+
+    env.TIINGO_API_KEY = 'tiingo_live_fallback_token';
+
+    let twelveDataCalls = 0;
+    let tiingoCalls = 0;
+
+    const makeTiingoBars = (count: number, stepMs: number) =>
+      Array.from({ length: count }, (_, idx) => {
+        const ts = tuesdayNoonUtc - (count - idx) * stepMs;
+        return {
+          date: new Date(ts).toISOString(),
+          open: 1.1,
+          high: 1.11,
+          low: 1.09,
+          close: 1.105,
+        };
+      });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes('nfs.faireconomy.media')) {
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+        if (url.includes('api.twelvedata.com')) {
+          twelveDataCalls++;
+          return new Response(JSON.stringify({ status: 'error', code: 429, message: 'API credits exhausted' }), { status: 429 });
+        }
+        if (url.includes('api.tiingo.com/tiingo/fx/')) {
+          tiingoCalls++;
+          const authHeader = (init?.headers as Record<string, string> | undefined)?.Authorization;
+          expect(authHeader).toBe('Token tiingo_live_fallback_token');
+          const is1h = url.includes('resampleFreq=1hour');
+          return new Response(
+            JSON.stringify(makeTiingoBars(is1h ? 30 : 100, is1h ? 3_600_000 : 300_000)),
+            { status: 200 }
+          );
+        }
+        return new Response('Not Found', { status: 404 });
+      })
+    );
+
+    const runPromise = worker.runSynchronization(env, 'CRON_1H_SYNC', { mode: '1H_ONLY' });
+    await vi.runAllTimersAsync();
+    const result = await runPromise;
+    vi.useRealTimers();
+
+    expect(result.status).toBe('SUCCEEDED');
+    expect(result.summary).toContain('tiingo fallback feeds: 4');
+    // TwelveData fails once (3 retries max on first pair) then short-circuits the remaining 3 pairs in this run
+    expect(twelveDataCalls).toBe(3);
+    expect(tiingoCalls).toBe(4);
+
+    const states = sqlite.prepare(`SELECT instrument, timeframe, provider, status FROM market_data_state`).all() as any[];
+    expect(states).toHaveLength(4);
+    expect(states.every((s) => s.provider === 'tiingo' && s.status === 'HEALTHY')).toBe(true);
+
+    const providers = sqlite
+      .prepare(`SELECT provider_name, status FROM provider_health_state WHERE service_type = 'MARKET_DATA' ORDER BY provider_name`)
+      .all() as any[];
+    expect(providers).toEqual([
+      { provider_name: 'tiingo', status: 'HEALTHY' },
+      { provider_name: 'twelvedata', status: 'FAILED' },
+    ]);
+
+    const xauCandle = sqlite
+      .prepare(`SELECT source_provider FROM market_candles WHERE instrument = 'XAUUSD' AND timeframe = '1H' LIMIT 1`)
+      .get() as any;
+    expect(xauCandle).toEqual({ source_provider: 'tiingo' });
+  });
 });

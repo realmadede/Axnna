@@ -11,6 +11,7 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   TWELVEDATA_API_KEY: string;
+  TIINGO_API_KEY?: string;
   FINNHUB_API_KEY?: string;
   BACKTEST_SECRET?: string;
   ACTOR_HASH_SECRET?: string;

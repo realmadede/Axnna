@@ -49,9 +49,13 @@ export function buildCorsHeaders(request: Request, url: URL, env: Env): Record<s
   return headers;
 }
 
-export function sanitizeErrorMessage(err: unknown, botToken?: string): string {
-  const raw = err instanceof Error ? err.message : String(err || 'Unknown error');
-  const cleaned = botToken ? raw.split(botToken).join('[REDACTED]') : raw;
+export function sanitizeErrorMessage(err: unknown, ...secretsToRedact: Array<string | undefined>): string {
+  let cleaned = err instanceof Error ? err.message : String(err || 'Unknown error');
+  for (const secret of secretsToRedact) {
+    if (secret) {
+      cleaned = cleaned.split(secret).join('[REDACTED]');
+    }
+  }
   return cleaned.slice(0, 300);
 }
 

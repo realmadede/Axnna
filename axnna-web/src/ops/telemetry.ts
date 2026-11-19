@@ -438,6 +438,7 @@ export async function pruneOperationalTables(
 export function getSecretStatus(env: Env): Array<{ key: string; configured: boolean; scope: string }> {
   return [
     { key: 'TWELVEDATA_API_KEY', configured: hasRealSecret(env.TWELVEDATA_API_KEY), scope: 'Market Data Ingestion' },
+    { key: 'TIINGO_API_KEY', configured: hasRealSecret(env.TIINGO_API_KEY), scope: 'Market Data Fallback' },
     { key: 'TELEGRAM_BOT_TOKEN', configured: hasRealSecret(env.TELEGRAM_BOT_TOKEN), scope: 'Telegram Bot API Delivery' },
     { key: 'TELEGRAM_WEBHOOK_SECRET', configured: hasRealSecret(env.TELEGRAM_WEBHOOK_SECRET), scope: 'Telegram Webhook Auth' },
     { key: 'BACKTEST_SECRET', configured: hasRealSecret(env.BACKTEST_SECRET), scope: 'Dev Backtest Endpoint' },
@@ -538,9 +539,9 @@ export async function evaluateSystemHealth(env: Env): Promise<{
   let marketDetail = 'No synchronization runs recorded yet';
   let latestMarketFetch: string | null = null;
 
-  if (!secretMap.TWELVEDATA_API_KEY) {
+  if (!secretMap.TWELVEDATA_API_KEY && !secretMap.TIINGO_API_KEY) {
     marketStatus = 'MISCONFIGURED';
-    marketDetail = 'TWELVEDATA_API_KEY is not configured';
+    marketDetail = 'No market data provider key configured';
   } else if (marketRows.length > 0) {
     const failed = marketRows.filter((r) => r.status === 'FAILED').length;
     const degraded = marketRows.filter((r) => r.status === 'DEGRADED').length;
@@ -568,7 +569,7 @@ export async function evaluateSystemHealth(env: Env): Promise<{
     }
   }
   subsystems.push({
-    name: 'Market Data (TwelveData)',
+    name: 'Market Data (TwelveData + Tiingo)',
     status: marketStatus,
     detail: marketDetail,
     lastUpdated: latestMarketFetch,

@@ -13,7 +13,7 @@ import {
   startJobRun,
 } from '../ops/telemetry';
 import { FreeEconomicCalendarProvider } from '../providers/FundamentalProvider';
-import { TwelveDataMarketProvider } from '../providers/MarketProvider';
+import { TiingoMarketProvider, TwelveDataMarketProvider } from '../providers/MarketProvider';
 import { getMostRecentFxSessionCloseMs, isFxMarketClosedUtc, parseUtcTimestampMs } from '../utils/time';
 import { evaluateInstrumentFundamentalContext } from './fundamentals';
 import { sanitizeErrorMessage } from './http';
@@ -389,8 +389,12 @@ export async function runSynchronization(
       }
     }
 
-    const apiKey = (env.TWELVEDATA_API_KEY || '').trim();
-    if (!hasRealSecret(apiKey)) {
+    const twelvedataKey = (env.TWELVEDATA_API_KEY || '').trim();
+    const tiingoKey = (env.TIINGO_API_KEY || '').trim();
+    const hasPrimary = hasRealSecret(twelvedataKey);
+    const hasFallback = hasRealSecret(tiingoKey);
+
+    if (!hasPrimary && !hasFallback) {
       const cfgErr = 'TWELVEDATA_API_KEY missing or placeholder';
       console.error('MARKET_SYNC_CONFIG_ERROR: TWELVEDATA_API_KEY is missing or placeholder');
       const tfsToMark = mode === '1H_ONLY' ? (['1H'] as const) : mode === '5M_AND_STRATEGY' ? (['5M'] as const) : SUPPORTED_TIMEFRAMES;
@@ -405,13 +409,74 @@ export async function runSynchronization(
     }
 
     console.log('MARKET_SYNC_STARTED');
-    const marketProvider = new TwelveDataMarketProvider(apiKey);
+    const primaryProvider = hasPrimary ? new TwelveDataMarketProvider(twelvedataKey) : null;
+    const fallbackProvider = hasFallback ? new TiingoMarketProvider(tiingoKey) : null;
+    let primaryAttempted = 0;
+    let primaryFailures = 0;
+    let fallbackAttempted = 0;
+    let fallbackFailures = 0;
+    let fallbackSucceeded = 0;
+    let primaryShortCircuited = false;
     let marketFailures = 0;
     const nowMs = Date.now();
     const fxClosed = isFxMarketClosedUtc(nowMs);
     const recentCloseMs = fxClosed ? getMostRecentFxSessionCloseMs(nowMs) : 0;
     const timeframesToCheck: readonly SupportedTimeframe[] =
       mode === '1H_ONLY' ? ['1H'] : SUPPORTED_TIMEFRAMES;
+
+    const fetchValidatedFeed = async (
+      inst: string,
+      tf: SupportedTimeframe
+    ): Promise<{ ok: true; candles: InternalCandle[]; providerName: string } | { ok: false; providerName: string; reason: string }> => {
+      let lastProviderName = primaryProvider ? primaryProvider.name : fallbackProvider!.name;
+      let lastReason = 'Unknown error';
+
+      if (primaryProvider && !primaryShortCircuited) {
+        primaryAttempted++;
+        try {
+          const candles = await primaryProvider.fetchCandles(inst, tf, 100);
+          const { valid, candles: validCandles, error } = MarketDataValidator.validateAndNormalize(candles);
+          if (valid) {
+            return { ok: true, candles: validCandles, providerName: primaryProvider.name };
+          }
+          primaryFailures++;
+          lastReason = error || 'Data validation failed';
+          console.warn(`Data validation failed for ${inst} ${tf}: ${lastReason}`);
+        } catch (err) {
+          primaryFailures++;
+          lastReason = sanitizeErrorMessage(err, twelvedataKey, tiingoKey);
+          console.error(`Failed primary fetch ${inst} ${tf}: ${lastReason}`);
+          if (lastReason.includes('429') || lastReason.includes('Authentication failure')) {
+            primaryShortCircuited = true;
+          }
+        }
+      }
+
+      if (fallbackProvider) {
+        fallbackAttempted++;
+        lastProviderName = fallbackProvider.name;
+        if (primaryProvider) {
+          console.warn(`MARKET_FALLBACK_TRIGGERED (${inst} ${tf}): trying ${fallbackProvider.name}`);
+        }
+        try {
+          const candles = await fallbackProvider.fetchCandles(inst, tf, 100);
+          const { valid, candles: validCandles, error } = MarketDataValidator.validateAndNormalize(candles);
+          if (valid) {
+            fallbackSucceeded++;
+            return { ok: true, candles: validCandles, providerName: fallbackProvider.name };
+          }
+          fallbackFailures++;
+          lastReason = error || 'Fallback data validation failed';
+          console.warn(`Fallback validation failed for ${inst} ${tf}: ${lastReason}`);
+        } catch (err) {
+          fallbackFailures++;
+          lastReason = sanitizeErrorMessage(err, twelvedataKey, tiingoKey);
+          console.error(`Failed fallback fetch ${inst} ${tf}: ${lastReason}`);
+        }
+      }
+
+      return { ok: false, providerName: lastProviderName, reason: lastReason };
+    };
 
     try {
       for (const inst of SUPPORTED_INSTRUMENTS) {
@@ -457,16 +522,16 @@ export async function runSynchronization(
               }
             }
 
-            const candles = await marketProvider.fetchCandles(inst, tf, 100);
-            const { valid, candles: validCandles, error } = MarketDataValidator.validateAndNormalize(candles);
-
-            if (!valid) {
+            const feedResult = await fetchValidatedFeed(inst, tf);
+            if (!feedResult.ok) {
               marketFailures++;
               hasPartialFailure = true;
-              console.warn(`Data validation failed for ${inst} ${tf}: ${error}`);
-              await markMarketDataFailed(env, inst, tf, marketProvider.name);
+              await markMarketDataFailed(env, inst, tf, feedResult.providerName);
               continue;
             }
+
+            const validCandles = feedResult.candles;
+            const sourceProvider = feedResult.providerName;
 
             const { results: existingCandleRows } = (await env.DB.prepare(
               `SELECT timestamp FROM market_candles WHERE instrument = ? AND timeframe = ? ORDER BY timestamp DESC LIMIT 150`
@@ -483,7 +548,7 @@ export async function runSynchronization(
                 return env.DB.prepare(`
                   INSERT OR IGNORE INTO market_candles (id, instrument, timeframe, timestamp, open, high, low, close, source_provider)
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                `).bind(id, inst, c.timeframe, isoTime, c.open, c.high, c.low, c.close, marketProvider.getProviderName());
+                `).bind(id, inst, c.timeframe, isoTime, c.open, c.high, c.low, c.close, sourceProvider);
               });
 
               const BATCH_CHUNK = 50;
@@ -496,13 +561,14 @@ export async function runSynchronization(
               INSERT INTO market_data_state (instrument, timeframe, provider, last_completed_candle, last_successful_fetch, status)
               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, 'HEALTHY')
               ON CONFLICT(instrument, timeframe) DO UPDATE SET
+                provider = excluded.provider,
                 last_completed_candle = excluded.last_completed_candle,
                 last_successful_fetch = CURRENT_TIMESTAMP,
                 status = 'HEALTHY',
                 error_count = 0,
                 updated_at = CURRENT_TIMESTAMP
             `)
-              .bind(inst, tf, marketProvider.name, new Date(validCandles[validCandles.length - 1].timestamp).toISOString())
+              .bind(inst, tf, sourceProvider, new Date(validCandles[validCandles.length - 1].timestamp).toISOString())
               .run();
 
             if (tf === '5M') {
@@ -511,8 +577,9 @@ export async function runSynchronization(
           } catch (e: unknown) {
             marketFailures++;
             hasPartialFailure = true;
-            console.error(`Failed to fetch/store ${inst} ${tf}: ${sanitizeErrorMessage(e, apiKey)}`);
-            await markMarketDataFailed(env, inst, tf, marketProvider.name);
+            const errMsg = sanitizeErrorMessage(e, twelvedataKey, tiingoKey);
+            console.error(`Failed to store ${inst} ${tf}: ${errMsg}`);
+            await markMarketDataFailed(env, inst, tf, primaryProvider ? primaryProvider.name : fallbackProvider!.name);
           }
         }
 
@@ -523,15 +590,27 @@ export async function runSynchronization(
       }
 
       const totalFeeds = SUPPORTED_INSTRUMENTS.length * timeframesToCheck.length;
-      const providerOutcome =
-        marketFailures === 0 ? 'HEALTHY' : marketFailures === totalFeeds ? 'FAILED' : 'DEGRADED';
-      await recordProviderHealth(env.DB, marketProvider.name, 'MARKET_DATA', providerOutcome);
+      if (primaryAttempted > 0) {
+        const primaryOutcome =
+          primaryFailures === 0 ? 'HEALTHY' : primaryFailures === primaryAttempted ? 'FAILED' : 'DEGRADED';
+        await recordProviderHealth(env.DB, 'twelvedata', 'MARKET_DATA', primaryOutcome);
+      } else if (primaryProvider && fallbackSucceeded === 0 && marketFailures === 0) {
+        await recordProviderHealth(env.DB, 'twelvedata', 'MARKET_DATA', 'HEALTHY');
+      }
+
+      if (fallbackAttempted > 0) {
+        const fallbackOutcome =
+          fallbackFailures === 0 ? 'HEALTHY' : fallbackFailures === fallbackAttempted ? 'FAILED' : 'DEGRADED';
+        await recordProviderHealth(env.DB, 'tiingo', 'MARKET_DATA', fallbackOutcome);
+      }
+
       await retryScheduledDeliveries(env);
       await retryFailedDailyRecaps(env);
 
       const finalStatus =
         marketFailures === totalFeeds ? 'FAILED' : hasPartialFailure ? 'DEGRADED' : 'SUCCEEDED';
-      const summary = `Calendar events: ${calendarCount}; market feed failures: ${marketFailures}/${totalFeeds}`;
+      const fallbackNote = fallbackSucceeded > 0 ? `; tiingo fallback feeds: ${fallbackSucceeded}` : '';
+      const summary = `Calendar events: ${calendarCount}; market feed failures: ${marketFailures}/${totalFeeds}${fallbackNote}`;
       await finishJobRun(env.DB, job.id, job.startedAtMs, finalStatus, summary);
       console.log('MARKET_SYNC_COMPLETED');
       return {
@@ -540,8 +619,9 @@ export async function runSynchronization(
         error: finalStatus === 'FAILED' ? `All ${totalFeeds} market data feeds failed.` : undefined,
       };
     } catch (error) {
-      await recordProviderHealth(env.DB, marketProvider.name, 'MARKET_DATA', 'FAILED');
-      const msg = sanitizeErrorMessage(error, apiKey);
+      const providerName = primaryProvider ? primaryProvider.name : fallbackProvider!.name;
+      await recordProviderHealth(env.DB, providerName, 'MARKET_DATA', 'FAILED');
+      const msg = sanitizeErrorMessage(error, twelvedataKey, tiingoKey);
       await finishJobRun(env.DB, job.id, job.startedAtMs, 'FAILED', undefined, msg);
       console.log('MARKET_SYNC_FAILED', msg);
       return { status: 'FAILED', error: msg };
