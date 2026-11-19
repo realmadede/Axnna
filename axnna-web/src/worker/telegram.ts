@@ -390,6 +390,8 @@ async function buildDailyRecapText(env: Env, recapDate: string): Promise<string>
 
   const { results: rows } = (await env.DB.prepare(
     `SELECT s.instrument,
+            s.direction,
+            s.technical_score,
             s.status,
             rd.decision as risk_decision,
             EXISTS (
@@ -398,11 +400,19 @@ async function buildDailyRecapText(env: Env, recapDate: string): Promise<string>
             ) as has_sent_delivery
      FROM signals s
      LEFT JOIN risk_decisions rd ON rd.signal_id = s.signal_id
-     WHERE s.generated_at >= ? AND s.generated_at <= ?`
+     WHERE s.generated_at >= ? AND s.generated_at <= ?
+     ORDER BY s.generated_at ASC`
   )
     .bind(startIso, endIso)
     .all()) as {
-    results: Array<{ instrument: string; status: string; risk_decision?: string | null; has_sent_delivery?: number }>;
+    results: Array<{
+      instrument: string;
+      direction?: string | null;
+      technical_score?: number | null;
+      status: string;
+      risk_decision?: string | null;
+      has_sent_delivery?: number;
+    }>;
   };
 
   let total = 0;
@@ -410,6 +420,7 @@ async function buildDailyRecapText(env: Env, recapDate: string): Promise<string>
   let suppressedOrPending = 0;
   let rejected = 0;
   const byInstrumentAlerted: Record<string, number> = {};
+  const alertedDetails: string[] = [];
 
   for (const r of rows || []) {
     total++;
@@ -417,6 +428,9 @@ async function buildDailyRecapText(env: Env, recapDate: string): Promise<string>
     if (wasAlerted) {
       alerted++;
       byInstrumentAlerted[r.instrument] = (byInstrumentAlerted[r.instrument] || 0) + 1;
+      const dir = r.direction ? ` ${r.direction}` : '';
+      const score = typeof r.technical_score === 'number' ? ` (Score ${Math.round(r.technical_score)}/100)` : '';
+      alertedDetails.push(`- ${r.instrument}${dir}${score}`);
     } else if (r.status === 'REJECTED' || r.risk_decision === 'REJECTED') {
       rejected++;
     } else if (r.status === 'ALERT_ELIGIBLE' || r.status === 'QUALIFIED') {
@@ -424,11 +438,61 @@ async function buildDailyRecapText(env: Env, recapDate: string): Promise<string>
     }
   }
 
+  let paperLine = 'Paper outcomes today: None closed (0 active)';
+  try {
+    const { results: closedTrades } = (await env.DB.prepare(
+      `SELECT outcome, r_multiple, net_pnl
+       FROM paper_trades
+       WHERE exit_timestamp >= ? AND exit_timestamp <= ?
+         AND status IN ('TARGET_HIT', 'STOP_HIT', 'EXPIRED', 'INVALIDATED')`
+    )
+      .bind(startIso, endIso)
+      .all()) as {
+      results: Array<{ outcome?: string | null; r_multiple?: number | null; net_pnl?: number | null }>;
+    };
+
+    const openRow = (await env.DB.prepare(
+      `SELECT COUNT(*) as open_count FROM paper_trades WHERE status IN ('PENDING_ENTRY', 'ACTIVE_TRADE')`
+    ).first()) as { open_count?: number } | null;
+
+    const openCount = Number(openRow?.open_count ?? 0);
+    const closed = closedTrades || [];
+
+    if (closed.length > 0 || openCount > 0) {
+      let wins = 0;
+      let losses = 0;
+      let other = 0;
+      let totalR = 0;
+      let totalPnl = 0;
+
+      for (const t of closed) {
+        if (t.outcome === 'WIN') wins++;
+        else if (t.outcome === 'LOSS') losses++;
+        else other++;
+
+        totalR += Number(t.r_multiple ?? 0);
+        totalPnl += Number(t.net_pnl ?? 0);
+      }
+
+      const signedR = `${totalR >= 0 ? '+' : ''}${totalR.toFixed(2)}R`;
+      const signedPnl = `${totalPnl >= 0 ? '+$' : '-$'}${Math.abs(totalPnl).toFixed(2)}`;
+      const otherNote = other > 0 ? `, ${other} expired/cancelled` : '';
+      paperLine =
+        closed.length > 0
+          ? `Paper outcomes today: ${wins}W / ${losses}L (${signedR}, ${signedPnl}${otherNote}) | Active: ${openCount}`
+          : `Paper outcomes today: None closed | Active: ${openCount}`;
+    }
+  } catch {
+    // Preserve recap resilience if paper_trades is unavailable in minimal mocks
+  }
+
   if (total === 0 || (alerted === 0 && suppressedOrPending === 0)) {
     return [
-      `AXNNA DAILY RECAP (${recapDate} UTC)`,
+      `AXNNA DAILY RECAP (${recapDate} | 21:00 UTC / 00:00 EAT)`,
+      `Session: Silence Day (0 qualified setups across EURUSD, GBPUSD, USDJPY, XAUUSD)`,
       `Alerted setups: 0`,
       `Candidates evaluated: ${total} (rejected: ${rejected})`,
+      paperLine,
       `Silence is a valid signal.`,
     ].join('\n');
   }
@@ -437,13 +501,29 @@ async function buildDailyRecapText(env: Env, recapDate: string): Promise<string>
     .map(([inst, cnt]) => `${inst}: ${cnt}`)
     .join(', ');
 
-  return [
-    `AXNNA DAILY RECAP (${recapDate} UTC)`,
+  const cappedDetails =
+    alertedDetails.length > 8
+      ? [...alertedDetails.slice(0, 8), `- ...and ${alertedDetails.length - 8} more`]
+      : alertedDetails;
+
+  const lines = [
+    `AXNNA DAILY RECAP (${recapDate} | 21:00 UTC / 00:00 EAT)`,
+    alerted > 0
+      ? `Session: Active Day (${alerted} ${alerted === 1 ? 'alert' : 'alerts'} delivered)`
+      : `Session: Risk-Gated Day (0 alerts sent)`,
     `Alerted setups: ${alerted}`,
     `Event-risk gated / unsent eligible: ${suppressedOrPending}`,
     `Total candidates evaluated: ${total} (rejected: ${rejected})`,
     breakdown ? `Alerted by instrument: ${breakdown}` : `Alerted by instrument: None`,
-  ].join('\n');
+  ];
+
+  if (cappedDetails.length > 0) {
+    lines.push(`Setups delivered:`);
+    lines.push(...cappedDetails);
+  }
+
+  lines.push(paperLine);
+  return lines.join('\n');
 }
 
 export async function runDailyRecap(env: Env, targetDate?: string): Promise<number> {

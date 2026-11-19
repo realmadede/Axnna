@@ -42,5 +42,5 @@ Subscribers can pause/stop alerts at any time from two surfaces:
 
 - `/start` (bare): Explains pairing via `https://axnna.madede.workers.dev/connect-telegram` or shows active status if already connected.
 - `/status [INSTRUMENT]` (alias `/status@BotUsername`): Returns live macro regime, event risk, and latest setup for `EURUSD`, `GBPUSD`, `USDJPY`, or `XAUUSD` (rate-limited at `10` commands per 5m per user).
-- `/recap`: Returns today's UTC setup summary separating alerted setups from risk-gated setups (or `"Silence is a valid signal."` when none occurred).
-- `runDailyRecap` (`0 21 * * *`): Sends one idempotent daily digest per user (`UNIQUE(recap_date, axnna_user_id)`), with `retryFailedDailyRecaps` retrying transient failures (`attempt_count < 3`) on subsequent cron runs.
+- `/recap`: Returns today's UTC setup summary in the same format as the scheduled recap — showing `Silence Day` confirmation (`"Silence is a valid signal."`) on 0-setup days or `Active Day` per-pair breakdown (plus paper trade W/L and R outcomes) on signal days.
+- `runDailyRecap` (`0 21 * * *`): Runs automatically at **21:00 UTC / 00:00 EAT** for both silence days and active/good signal days, sending one idempotent digest per connected user (`UNIQUE(recap_date, axnna_user_id)`), with `retryFailedDailyRecaps` retrying transient failures (`attempt_count < 3`) on subsequent cron runs.

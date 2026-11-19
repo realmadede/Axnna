@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import worker, { deliverTelegramAlerts, retryScheduledDeliveries, Env } from '../src/worker';
+import worker, { deliverTelegramAlerts, retryScheduledDeliveries, runDailyRecap, Env } from '../src/worker';
 import { CandidateSetup } from '../src/core-engine/Types';
 import { createSqliteD1 } from './helpers/sqliteD1';
 
@@ -413,5 +413,69 @@ describe('Telegram Pairing, Webhook Security & Delivery Reliability', () => {
 
     const row = sqlite.prepare(`SELECT status, attempt_count FROM notification_deliveries WHERE id = 'nd_exh'`).get() as any;
     expect(row).toMatchObject({ status: 'EXHAUSTED', attempt_count: 5 });
+  });
+
+  it('delivers formatted Daily Recap for both silence days and active/good days (including Gold and paper outcomes)', async () => {
+    sqlite
+      .prepare(
+        `INSERT INTO axnna_users (id, telegram_user_id, telegram_chat_id, status, signal_notifications_enabled, connected_at)
+         VALUES ('u_recap', '9001', '9001', 'CONNECTED', 1, '2026-11-17T00:00:00Z')`
+      )
+      .run();
+
+    const sentTexts: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        sentTexts.push(JSON.parse(String(init?.body || '{}')).text);
+        return new Response(JSON.stringify({ ok: true, result: { message_id: sentTexts.length } }), { status: 200 });
+      })
+    );
+
+    // 1. Silence Day (0 setups)
+    const silenceSent = await runDailyRecap(env, '2026-11-18');
+    expect(silenceSent).toBe(1);
+    expect(sentTexts[0]).toContain('21:00 UTC / 00:00 EAT');
+    expect(sentTexts[0]).toContain('Silence Day');
+    expect(sentTexts[0]).toContain('Alerted setups: 0');
+    expect(sentTexts[0]).toContain('Silence is a valid signal.');
+
+    // 2. Active / Good Day with XAUUSD Gold signal + closed WIN paper trade + 1 active trade
+    sqlite
+      .prepare(
+        `INSERT INTO signals (
+           signal_id, strategy_id, strategy_version, instrument, direction, generated_at,
+           anchor_timeframe, execution_timeframe, technical_score, status
+         ) VALUES
+           ('sig_gold_win', 'AXNNA_V1_LIQUIDITY_FVG', 'technical-v1', 'XAUUSD', 'LONG', '2026-11-19T13:15:00.000Z', '1H', '5M', 84, 'ALERTED'),
+           ('sig_eu_active', 'AXNNA_V1_LIQUIDITY_FVG', 'technical-v1', 'EURUSD', 'SHORT', '2026-11-19T15:30:00.000Z', '1H', '5M', 76, 'ALERTED')`
+      )
+      .run();
+    sqlite
+      .prepare(
+        `INSERT INTO paper_trades (
+           id, account_id, signal_id, instrument, timeframe, direction, strategy_id, strategy_version,
+           intended_entry, stop_loss, target_price, status, outcome, r_multiple, net_pnl,
+           signal_timestamp, entry_timestamp, exit_timestamp
+         ) VALUES
+           ('pt_1', 'default', 'sig_gold_win', 'XAUUSD', '5M', 'LONG', 'AXNNA_V1_LIQUIDITY_FVG', 'technical-v1',
+            2620.0, 2610.0, 2642.0, 'TARGET_HIT', 'WIN', 2.15, 215.0,
+            '2026-11-19T13:15:00.000Z', '2026-11-19T13:20:00.000Z', '2026-11-19T16:45:00.000Z'),
+           ('pt_2', 'default', 'sig_eu_active', 'EURUSD', '5M', 'SHORT', 'AXNNA_V1_LIQUIDITY_FVG', 'technical-v1',
+            1.085, 1.088, 1.079, 'ACTIVE_TRADE', NULL, NULL, NULL,
+            '2026-11-19T15:30:00.000Z', '2026-11-19T15:35:00.000Z', NULL)`
+      )
+      .run();
+
+    const activeSent = await runDailyRecap(env, '2026-11-19');
+    expect(activeSent).toBe(1);
+    expect(sentTexts[1]).toContain('21:00 UTC / 00:00 EAT');
+    expect(sentTexts[1]).toContain('Active Day');
+    expect(sentTexts[1]).toContain('Alerted setups: 2');
+    expect(sentTexts[1]).toContain('XAUUSD: 1');
+    expect(sentTexts[1]).toContain('XAUUSD LONG (Score 84/100)');
+    expect(sentTexts[1]).toContain('EURUSD SHORT (Score 76/100)');
+    expect(sentTexts[1]).toContain('Paper outcomes today: 1W / 0L (+2.15R, +$215.00) | Active: 1');
+    expect(sentTexts[1]).not.toContain('Silence is a valid signal.');
   });
 });
