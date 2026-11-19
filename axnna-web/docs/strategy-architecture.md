@@ -1,20 +1,14 @@
 # Strategy Architecture
 
-Axnna operates on a **Multi-Strategy Architecture**. The application does NOT hardcode a single strategy into the core codebase.
+Axnna operates on a versioned strategy architecture decoupled from external providers, Risk Gate enforcement, and paper/alert delivery modules.
 
-## The Strategy Registry
-Every formally defined strategy (e.g., `AXNNA_V1_LIQUIDITY_FVG`) is registered in the database via the `strategies` and `strategy_versions` tables.
-- A strategy must have an explicit version.
-- Only explicitly `ACTIVE` strategies participate in signal generation.
+## Strategy Registry & Versioning
 
-## Signal Independence
-Each strategy receives the same Canonical Market Data layer (e.g., EURUSD 5M). 
-If two strategies are evaluated:
-```text
-Canonical Data -> Strategy A -> Signal 101
-Canonical Data -> Strategy B -> Signal 102
-```
-There is **NO** automatic confluence. The system does not average signals or attempt to resolve contradictions. Every signal is firmly traceable to the specific strategy ID and version that generated it.
+- Every active rule set is registered in D1 (`strategies` and `strategy_versions`, seeded with `AXNNA_V1_LIQUIDITY_FVG`), pairing a deterministic rule implementation with explicit `strategyVersion` and `schemaVersion` checks inside `strategy_state`.
+- State mismatches or schema bumps trigger a deterministic rebuild from the D1 `market_candles` history window (`STRATEGY_STATE_RESET`).
 
-## The Mock Strategy
-For frontend and pipeline testing, a deterministic mock strategy is implemented. It exists solely to test the `Strategy -> Signal Store -> Notification Delivery` flow and must never be enabled in production.
+## Signal & Risk Separation
+
+- **Candidate Detection (`StrategyEngine`):** Consumes normalized `1H` and `5M` `InternalCandle` feeds (`MarketDataValidator`) to score setups (`>= 65` threshold) without reading calendar or Telegram tables.
+- **Fail-Closed Gate (`RiskGate.ts`):** Independently validates data freshness, session timing, structural geometry, duplicate signal suppression, and `FundamentalEngine` event risk before committing `'APPROVED'` / `'REJECTED'` to `risk_decisions` and `audit_events`.
+- **Simulated Track Record (`PaperTradingEngine.ts`):** Every `RiskGate`-approved signal spawns one `SIMULATION_ONLY` paper trade tracked conservatively on subsequent completed `5M` bars and exposed read-only via `GET /api/performance` and `/strategies`.

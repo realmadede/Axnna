@@ -1,24 +1,23 @@
 # Axnna V1 Strategy Engine
 
 ## Architecture
-The engine is a purely functional state machine (`AxnnaV1Engine`) evaluating the frozen `AXNNA_V1_LIQUIDITY_FVG` v4 rules.
 
-## State Machine
-The core engine (`src/engine/AxnnaV1Strategy.ts`) processes candles sequentially:
-1. Initialize ATR recursively.
-2. Synchronize 1H candle closes for HTF Bias.
-3. Detect 5M Swings (BSL/SSL).
-4. Evaluate Setup Pipeline (Penetration -> Sweep -> Displacement -> FVG -> RR).
+`StrategyEngine` (`src/core-engine/StrategyEngine.ts`) is a deterministic, stateful/incremental state machine evaluating the frozen `AXNNA_V1_LIQUIDITY_FVG` rules (`ScoringModel.ts` + `MarketData.ts` + `core-engine/Types.ts`).
 
-## Persistence Model
-Since Cloudflare Workers are ephemeral, `strategy_state` table holds `state_payload` JSON. On every cron tick, the Worker deserializes the payload, feeds new canonical candles into the state machine, and serializes the new state.
+## State Machine (`processIncremental`)
 
-## Gap Recovery
-The engine explicitly chronologically processes arrays of candles. If the cron misses an interval, multiple candles will be fed in chronologically.
+For each instrument (`EURUSD`, `GBPUSD`, `USDJPY`, `XAUUSD`), `StrategyEngine` processes newly closed `5M` candles sequentially against `1H` macro context:
 
-## No-Look-Ahead
-Strict mathematical arrays prevent lookahead. Swings are only confirmed exactly $N$ periods later (`t - N`).
+1. **ATR & Range Tracking:** Updates smoothed True Range / ATR state deterministically.
+2. **HTF Bias (`1H`):** Synchronizes completed `1H` structure to establish higher-timeframe directional bias.
+3. **LTF Swing Confirmation (`5M`):** Identifies confirmed Buy-Side Liquidity (BSL) and Sell-Side Liquidity (SSL) levels strictly without lookahead (`t - N` confirmation).
+4. **Setup Pipeline:** Evaluates liquidity penetration and sweep -> displacement impulse -> Fair Value Gap (FVG) zone -> retracement entry, structural Stop Loss / Take Profit, Risk:Reward geometry, and weighted technical score (`ScoringModel`, passing at `>= 65`).
+
+## Persistence & Gap Recovery
+
+- On each Worker sync tick (`src/worker/sync.ts`), `runStrategyEngine` restores `PersistedStrategyState` from D1 `strategy_state`, processes only completed `5M` bars strictly newer than `lastProcessed5mTimestamp`, and writes the updated payload back to D1.
+- Missing or incompatible state triggers `STRATEGY_STATE_RESET` and reconstructs cleanly from the stored `1H` (`200`) + `5M` (`300`) candle window.
 
 ## Testing
-Comprehensive vitest suite covers everything from ATR to Sweep logic.
 
+Determinism, zero-lookahead swing confirmation, scoring weights, and incremental vs full-run parity are verified under Vitest (`src/core-engine/__tests__/` and `tests/`).

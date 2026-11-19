@@ -1,48 +1,49 @@
-# Axnna Unified Cloudflare Architecture
+# Cloudflare Architecture & Security Model
 
-## Architectural Decision: Unified Worker + Static Assets
+Axnna combines a React + TypeScript + Vite SPA with a unified Cloudflare Worker (`axnna-web/src/worker.ts` + `axnna-web/src/worker/*`) and Cloudflare D1 SQLite (`DB`).
 
-Axnna uses a **single unified Cloudflare Worker with Workers Static Assets** configured in `axnna-web/wrangler.toml`:
+## Runtime Topology
 
-- Worker entry point: `src/worker.ts`
-- Static bundle directory: `./dist` (built by Vite via `npm run build`)
-- Assets binding: `ASSETS`
-- SPA routing: `not_found_handling = "single-page-application"`
-- Worker-first execution: `run_worker_first = true`
+- **Unified Cloudflare Worker + Static Assets:** `axnna-web/wrangler.toml` builds `./dist` (`npm run build`) and binds it as `ASSETS` (`not_found_handling = "single-page-application"`, `run_worker_first = true`).
+  - `/api` and `/api/*` unmatched routes return JSON `404 {"error":"Not Found"}`.
+  - Requests for missing `/assets/*` or static file extensions (`.js`, `.mjs`, `.css`, `.png`, `.jpg`, `.svg`, `.ico`, `.json`, `.woff2`, `.map`, etc.) return HTTP `404` instead of falling back to `index.html`.
+  - Valid client routes (`/`, `/about`, `/strategies`, `/faq`, `/status`, `/contact`, `/connect-telegram`, `/legal/:page`) serve `index.html`.
+- **Environment Separation (`axnna-web/wrangler.toml`):**
+  - **Local dev:** `ENVIRONMENT = "development"`, `database_id = "local-db-id"`.
+  - **Staging (`[env.staging]`):** `axnna-staging`, `ALLOWED_ORIGINS = "https://axnna-staging.madede.workers.dev"`, staging cron triggers disabled (`crons = []`) so staging never doubles TwelveData or D1 usage, and `database_id = "REPLACE_WITH_STAGING_D1_DATABASE_ID"` guarded by CD until provisioned.
+  - **Production (`[env.production]`):** Live at `axnna` (`https://axnna.madede.workers.dev`), D1 `axnna_db_production` (`70a35528-d8e7-4e54-9e0e-763ea0a26ad1`), scheduled crons `["*/15 * * * *", "2 * * * *", "0 21 * * *"]`.
+- **End-to-End Pipeline (`SIMULATION_ONLY`):**
+  `Market Data (TwelveData + Tiingo fallback) & Economic Calendar -> PaperTradingEngine Pre-Evaluation -> StrategyEngine (1H HTF Bias -> 5M Liquidity/Displacement/FVG) -> FundamentalEngine -> Fail-Closed RiskGate -> Telegram Alerts + Persisted Paper Trade -> Daily Recap & Pruning`.
+  Real-money broker execution does not exist (`SIMULATION_ONLY`).
+- **Accounting & Lifecycle Separation:** `signals.status` strictly preserves qualification/alert delivery history (`ALERT_ELIGIBLE`, `ALERTED`, `REJECTED`), while simulated execution lives in `paper_trades` (`PENDING_ENTRY` -> `ACTIVE_TRADE` -> `TARGET_HIT` / `STOP_HIT` / `EXPIRED` / `INVALIDATED`) with atomic D1 reconciliation (`current_balance = starting_balance + SUM(closed net_pnl)`) and exit-chronology (`exit_timestamp ASC`) equity curve metrics.
 
-Previous deployment fragments attempted to deploy `./dist` to a separate Cloudflare Pages project (`pages.dev`) without running Worker `/api/*` routes on the same origin. Unifying static assets inside the Worker eliminates split-origin cookie/CORS mismatches and ensures `SameSite=Strict` admin session cookies, `/api/status`, `/api/feedback`, `/api/analytics/event`, `/api/telegram/*`, and `/api/config/*` share a single origin (`axnna.madede.workers.dev` in production, `axnna-staging.madede.workers.dev` in staging).
+## API Authorization Matrix
 
-## Request Routing Contract
+| Route | Method | Access | Authentication / Protection |
+| :--- | :--- | :--- | :--- |
+| `/api/status` | `GET` | Public | Sanitized overall status & per-subsystem health (`evaluateSystemHealth`, `Cache-Control: public, max-age=15`); zero secrets or private rows |
+| `/api/performance` | `GET` | Public | Read-only aggregate paper trading KPIs, per-instrument & per-score-band (`65-74`, `75-84`, `85+`) breakdown, 0 D1 writes (`Cache-Control: public, max-age=300`) |
+| `/api/fundamentals/:instrument` | `GET` | Public | Validates against `EURUSD`, `GBPUSD`, `USDJPY`, `XAUUSD`; returns cached macro context from `FundamentalEngine` |
+| `/api/telegram/session` | `POST` | Public | Creates 10-minute UUID pairing token in `telegram_connection_sessions`; D1 rate-limited (`15/hour` per actor hash) |
+| `/api/telegram/session/:token` | `GET` | Public | Returns session status (`PENDING`, `CONNECTED` with optional `alreadyConnected: true`, `DISCONNECTED`, `EXPIRED`, `NOT_FOUND`) |
+| `/api/telegram/disconnect` | `POST` | Public | Disconnects a verified pairing session's Telegram chat via matching `sessionToken` (`axnna_users.status = 'DISCONNECTED'`) |
+| `/api/telegram/webhook` | `POST` | Telegram Webhook | Constant-time `X-Telegram-Bot-Api-Secret-Token` validation against `TELEGRAM_WEBHOOK_SECRET` (fails closed `503` if unset); enforces `10/5m` command throttling |
+| `/api/dev/backtest` | `POST` | Authenticated | Constant-time `Authorization: Bearer <BACKTEST_SECRET>` (`503` if unset); validated instrument/timeframe, bounded `100..400` `1H` bars (`1200..4800` `5M`) |
 
-When a request arrives at the Worker (`src/worker.ts`):
+All other `/api` and `/api/*` endpoints (including legacy removed admin routes) return `404 {"error":"Not Found"}`.
 
-1. **`/api/*` requests**: Handled directly by the Worker router.
-   - Public endpoints:
-     - `GET /api/status` (sanitized overall + subsystem status)
-     - `POST /api/feedback` (contact & feedback submission with validation, honeypot check, and 3/hour hashed-IP rate limit)
-     - `POST /api/analytics/event` (first-party cookie-free telemetry event ingestion)
-     - `POST /api/telegram/session` and `GET /api/telegram/session/:token`
-     - `POST /api/telegram/webhook` (authenticated via `X-Telegram-Bot-Api-Secret-Token`)
-     - `GET /api/fundamentals/:instrument`
-   - Protected / secret-gated endpoints:
-     - `POST /api/auth/config`, `GET /api/auth/config/status`, `POST /api/auth/config/logout`
-     - `GET|POST /api/config/*` (cookie auth + brute-force lockout + `Origin` allowlist + `X-Requested-With: AxnnaAdmin`)
-     - `GET /api/signals`, `GET /api/markets`, `GET /api/calendar` (admin session auth)
-     - `POST /api/dev/backtest` (`Authorization: Bearer <BACKTEST_SECRET>`)
-   - Unmatched `/api/*` routes explicitly return `404` JSON (`{"error":"Not Found"}`) and never fall through to the SPA shell.
-2. **Non-`/api/*` requests**:
-   - Delegated to `env.ASSETS.fetch(request)`.
-   - Static asset paths serve matching files from `./dist` or return `404` if a missing asset file is requested.
-   - SPA page routes (`/`, `/about`, `/strategies`, `/faq`, `/status`, `/contact`, `/privacy`, `/terms`, `/connect-telegram`, `/config`) serve `index.html` cleanly under `single-page-application` handling.
+## Scheduled Cron Architecture (`src/worker.ts`)
 
-## Scheduled Cron Triggers
+1. **`*/15 * * * *` (`CRON_SYNC`, `mode: '5M_AND_STRATEGY'`):**
+   - Refreshes `FreeEconomicCalendarProvider` when `provider_health_state` is stale (`>= 25m`).
+   - Fetches `5M` candles across all 4 pairs (and refreshes `1H` only if D1 `1H` state is missing or older than 2 hours). Skips active fetches during FX weekend closes when recent session bars are cached.
+   - Evaluates open `paper_trades`, runs incremental `StrategyEngine` (`>= 65` score), evaluates `RiskGate`, sends Telegram alerts with atomic `SENDING` claim locks, and retries `RETRY_SCHEDULED` alerts / failed daily recaps.
+2. **`2 * * * *` (`CRON_1H_SYNC`, `mode: '1H_ONLY'`):**
+   - Refreshes `1H` candles across all 4 pairs (`4` requests/hour), skipping weekends when already cached.
+3. **`0 21 * * *` (21:00 UTC Daily Recap & Maintenance):**
+   - Dispatches idempotent `runDailyRecap(env)` to connected users (`UNIQUE(recap_date, axnna_user_id)`) and runs `pruneOperationalTables(env.DB)`.
 
-Configured identically across base, `[env.staging]`, and `[env.production]`:
+## CORS Policy
 
-- `*/5 * * * *`: Runs `worker.runSynchronization(env, 'CRON_SYNC')`:
-  1. Fetches upcoming macro events via `FreeEconomicCalendarProvider` (no paid API key required) and updates `economic_events` + `provider_health_state`.
-  2. Fetches `5M` and `1H` candles for `EURUSD`, `GBPUSD`, `USDJPY`, `XAUUSD` via `TwelveDataMarketProvider`, validates completed candles only, stores in `market_candles`, updates `market_data_state` + `provider_health_state`.
-  3. Runs incremental `StrategyEngine` evaluation per instrument, records signals in `signals` + `strategy_state`, checks risk gating (`HIGH EVENT RISK`), and delivers Telegram alerts respecting `global_notifications_enabled` and `strategies.active_status`.
-  4. Retries eligible `RETRY_SCHEDULED` deliveries up to `MAX_DELIVERY_ATTEMPTS`.
-  5. Records execution outcome in `scheduled_job_runs`.
-- `0 21 * * *`: Runs `runDailyRecap(env)` (21:00 UTC daily summary across connected subscribers with `daily_recap_deliveries` idempotency).
+- `buildCorsHeaders` checks `Origin` against the request origin, `ALLOWED_ORIGINS`, and local dev hosts (`localhost` / `127.0.0.1` only when serving locally).
+- Wildcard `Access-Control-Allow-Origin: *` is never used.

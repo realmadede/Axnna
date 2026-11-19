@@ -1,21 +1,25 @@
 # Fundamental Engine Architecture
 
-The Axnna Fundamental Context Engine evaluates macroeconomic data and provides contextual filtering capabilities to technical setups.
+`FundamentalEngine` (`src/engine/FundamentalEngine.ts`) evaluates macroeconomic releases and event proximity windows without altering raw price structure detection.
 
 ## Data Flow
-1. **Cloudflare Cron Worker**: Periodically accesses Finnhub securely and inserts upcoming/historical releases into the `economic_events` D1 cache table.
-2. **API Endpoint (`/api/fundamentals/:instrument`)**: Selects the canonical cached events and processes them through the stateless `FundamentalEngine`.
-3. **Frontend**: Requests normalized output from the API, never directly hitting Finnhub.
+
+1. **Scheduled Sync (`src/worker/sync.ts`):** `FreeEconomicCalendarProvider` periodically refreshes `USD,EUR,GBP,JPY` macro releases (`biquote.io` primary + FairEconomy weekly feed fallback) into D1 `economic_events`.
+2. **Health Check (`src/worker/fundamentals.ts`):** Queries `provider_health_state` (`ECONOMIC_CALENDAR`) so stale (`> 2h`) or failing calendar feeds resolve fail-closed to `'UNKNOWN'` / `'FUNDAMENTAL UNAVAILABLE'`.
+3. **Stateless Context Evaluation:** `FundamentalEngine.evaluateContext` normalizes events relative to the target instrument and timestamp.
+4. **Public Endpoint (`GET /api/fundamentals/:instrument`):** Returns evaluated context from D1 cache for validated instruments (`EURUSD`, `GBPUSD`, `USDJPY`, `XAUUSD`).
 
 ## Core Operations
-- **Currency Exposure Mapping**: Automatically determines that USD events affect EURUSD, GBPUSD, etc. Evaluates the Base vs Quote context so that stronger USD is properly assessed as *bearish* for EURUSD.
-- **Event Risk Classification**: Returns `NONE`, `LOW`, `ELEVATED`, `HIGH`, or `EXTREME` depending on configurable minute boundaries surrounding `HIGH`/`MEDIUM` impact events.
-- **Directional Bias**: Weights indicator surprises (actual vs estimate). It knows that a *higher* Unemployment Rate is dovish, but a *higher* CPI is hawkish.
-- **Macro Regime**: Tallies recent indicator surprises to label the environment (e.g., `HAWKISH` or `MIXED`).
-- **Confluence**: Cross-references technical direction (`LONG`/`SHORT`) against fundamental score to determine if a setup aligns (`STRONG ALIGNMENT`) or contradicts (`CONFLICT`). High event risk supersedes scoring by enforcing `HIGH EVENT RISK`.
 
-## Environment Variables
-- `FINNHUB_API_KEY` (Required, Server-Side Only)
+- **Currency Exposure Mapping:** Evaluates base vs quote exposure (for example, hawkish `USD` surprises weigh bearish on `EURUSD` / `GBPUSD` / `XAUUSD` and bullish on `USDJPY`).
+- **Event Risk Classification:** Classifies surrounding `HIGH`/`MEDIUM` releases into `NONE`, `LOW`, `ELEVATED`, `HIGH`, `EXTREME`, or `UNKNOWN`.
+- **Indicator Sign Normalization:** Recognizes inverted vs direct releases (higher Unemployment Rate is dovish; higher CPI/NFP is hawkish).
+- **Macro Regime & Confluence:** Tallies recent indicator surprises (`HAWKISH`, `DOVISH`, `MIXED`) and combines technical direction (`LONG`/`SHORT`) with fundamental bias, yielding alignment or `HIGH EVENT RISK` / `FUNDAMENTAL UNAVAILABLE` warnings checked by `RiskGate`.
+
+## Environment Notes
+
+- `FreeEconomicCalendarProvider` operates keylessly (no paid calendar key required).
 
 ## Testing
-Core calculations are fully backed by Vitest (`tests/fundamental.test.ts`), ensuring reliable directional scoring and risk assignment without lookahead bias.
+
+Unit tests in `tests/` (`fundamental.test.ts` and RiskGate tests) verify directional scoring, event proximity windows, fail-closed `UNKNOWN` handling, and zero lookahead bias.

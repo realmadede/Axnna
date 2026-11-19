@@ -1,59 +1,58 @@
 # Axnna
 
-Axnna is a web-based, Cloudflare-hosted automated market-analysis engine with Telegram-first user identity. It monitors financial markets 24/5, evaluates structural alignment using a purely deterministic pipeline, and delivers formatted setup signals natively through Telegram.
+Axnna is an automated market structure analysis and Telegram signal intelligence platform focused on intraday liquidity sweeps, displacement, fair value gaps, macroeconomic event risk gating, and conservative simulated forward tracking.
 
-## Core Philosophy
-Most retail traders lose money because they lack consistency. They chase price action, ignore macroeconomic context, and fail to filter out low-probability environments. Axnna evaluates setups geometrically and fundamentally. We assign a deterministic **Axnna score** to each candidate.
+## Monitored Instruments
 
-**Silence is a valid signal.** If a setup scores below our strict 65% threshold, Axnna stays silent. It only triggers a Telegram notification when strict structural geometry aligns with macro-economic safety.
+- `EURUSD` (`5M` / `1H`)
+- `GBPUSD` (`5M` / `1H`)
+- `USDJPY` (`5M` / `1H`)
+- `XAUUSD` (`5M` / `1H`)
 
-## Architecture
+## Core Architecture
 
-Axnna operates as a strictly one-way deterministic data pipeline:
-
-1. **Market Data:** Continuous ingestion of forex/commodity structural data via cron-triggered Cloudflare Workers.
-2. **Macro Data:** Integration with Finnhub to identify economic events and "EXTREME EVENT RISK" periods that pause technical operations.
-3. **State Engine:** A stateless evaluation pipeline mapping relative Swing Highs/Lows, Liquidity Sweeps, Displacement, and Fair Value Gaps (FVG) against structural thresholds.
-4. **Telegram Native API:** Push notification delivery mapping setups strictly to authenticated users' Telegram clients.
-
-There is NO customer login, NO password management, and NO email registration on the web. A visitor becomes an **Axnna User** strictly through authenticating with the Axnna Telegram bot.
+- **Frontend (`/axnna-web/src`):** React 18, TypeScript, Vite SPA bundled into `./dist` and served by the unified Cloudflare Worker via the `ASSETS` binding (`run_worker_first = true`). Pure CSS design system (`src/index.css`) with dark obsidian (`#080b10`) and light slate (`#f5f7fa`) themes, shared `<SetupDiagram />` SVG visuals, Sweep-to-Signal Pulse logo and favicons, collapsible FAQ accordions, and responsive mobile drawer navigation.
+  - Public routes: `/`, `/about`, `/strategies` (`/methodology` redirects to `/strategies`), `/faq`, `/status`, `/contact`, `/connect-telegram`, `/legal/:page` (`privacy`, `terms`, `risk`, `cookies`).
+- **Modular Cloudflare Worker (`axnna-web/src/worker.ts` & `src/worker/*`):**
+  - `src/worker.ts` routes API requests, serves SPA static assets, and handles three scheduled cron triggers (`*/15 * * * *`, `2 * * * *`, `0 21 * * *`).
+  - `src/worker/http.ts`: Origin allowlist CORS handling, bounded JSON body parsing, `/api/status`, `/api/performance` (read-only aggregate paper trading track record), and bearer-authenticated `/api/dev/backtest`.
+  - `src/worker/sync.ts`: D1-leased (`sync_leases`) market data synchronization (`TwelveDataMarketProvider` primary with automatic `TiingoMarketProvider` fallback), keyless economic calendar sync (`FreeEconomicCalendarProvider`), weekend FX closure skipping, `PaperTradingEngine` evaluation, incremental `StrategyEngine` evaluation, fail-closed `evaluateRiskGate`, and alert/recap retries.
+  - `src/worker/telegram.ts`: Deep-link pairing sessions (`/api/telegram/session`, `/api/telegram/session/:token`), web & chat disconnect (`POST /api/telegram/disconnect`, `/disconnect`, `/stop`), constant-time `X-Telegram-Bot-Api-Secret-Token` webhook handling (`/status [PAIR]`, `/recap`, `/start`), atomic `SENDING` claim locks, and 21:00 UTC daily recaps.
+  - `src/worker/fundamentals.ts`: `GET /api/fundamentals/:instrument` macro context evaluation via `FundamentalEngine`.
+- **Core Strategy & Risk Engine (`axnna-web/src/core-engine/`, `axnna-web/src/engine/`):**
+  - `StrategyEngine.ts` (`AXNNA_V1_LIQUIDITY_FVG`): Incremental multi-timeframe (`1H` HTF bias + `5M` liquidity sweeps, displacement, FVG retracement) with deterministic state persistence in `strategy_state` and quality threshold (`>= 65`).
+  - `FundamentalEngine.ts`: Currency exposure mapping (`USD`, `EUR`, `GBP`, `JPY`), macro regime tallying, and event proximity risk classification (`NONE`, `LOW`, `ELEVATED`, `HIGH`, `EXTREME`, or `UNKNOWN`).
+  - `RiskGate.ts`: Independent fail-closed pre-delivery gate (`evaluateRiskGate`) validating instrument support, active-session freshness (`<= 20m`), setup age (`<= 30m`), structural SL/TP geometry, duplicate suppression, and event risk before persisting `risk_decisions` atomically.
+  - `PaperTradingEngine.ts`: Conservative `SIMULATION_ONLY` forward tracker (`PENDING_ENTRY` -> `ACTIVE_TRADE` -> `TARGET_HIT` / `STOP_HIT` / `EXPIRED` / `INVALIDATED`) with spread, slippage, and commission modeling.
 
 ## Repository Structure
 
-- `axnna-web/`: The primary Cloudflare Pages / Worker monolith.
-  - `src/pages/`: The React-based, CursorHop-inspired premium marketing layer. Includes dynamic hero elements, strict architectural visualization, and a secure `Config` route.
-  - `src/worker.ts`: The Cloudflare Worker entry point routing API requests, running Cron triggers, and processing market strategy.
-  - `src/engine/`: The purely functional deterministic strategy engines (`AxnnaV1Strategy`, `FundamentalEngine`).
-  - `migrations/`: D1 Database schema migrations.
-  - `docs/`: In-depth strategy logic and system specification documentation.
+```text
+/
+├── axnna-web/                  # Vite React SPA, Cloudflare Worker, D1 migrations, and Vitest suites
+│   ├── src/core-engine/        # StrategyEngine, BacktestEngine, ScoringModel, MarketData validator
+│   ├── src/engine/             # FundamentalEngine, RiskGate, PaperTradingEngine
+│   ├── src/providers/          # TwelveDataMarketProvider, TiingoMarketProvider, FreeEconomicCalendarProvider
+│   ├── src/worker/             # Modular HTTP, sync, fundamental, and Telegram handlers
+│   ├── src/ops/                # D1 leases, sliding rate limits, provider/system health, retention pruning
+│   ├── src/pages/              # Public SPA routes
+│   ├── migrations/             # Sequential Cloudflare D1 SQL migrations (0001 through 0011)
+│   └── docs/                   # Subsystem design docs & ADRs
+├── docs/
+│   ├── deployment/             # Cloudflare architecture, D1 provisioning, runbook, env & secrets guides
+│   ├── WORKFLOW.md             # Local dev, CI/CD, and Worker deployment workflow
+│   └── Axnna_*Specification*   # Historical strategy & engine research specifications
+└── .github/workflows/          # Node 24 CI (ci.yml) & Cloudflare Worker CD (cd.yml)
+```
 
-## Development
-
-The project is built on Vite, React, TypeScript, and Cloudflare Workers (D1 + Cron).
+## Quick Start
 
 ```bash
 cd axnna-web
-
-# Install dependencies
-npm install
-
-# Run the frontend marketing layer locally (Vite)
+npm ci
+npm run db:init
+npm run typecheck && npm run lint && npm test
 npm run dev
-
-# Run the Cloudflare backend/API and Database emulator locally
-npx wrangler dev src/worker.ts --local
 ```
 
-## Deployment
-
-```bash
-# Deploy the web/marketing static assets to Cloudflare Pages
-npm run build
-npx wrangler pages deploy dist --project-name axnna
-
-# Deploy the Worker backend and Cron triggers
-npx wrangler deploy src/worker.ts
-```
-
-## Disclaimer
-Axnna is a structural analysis tool, not a registered investment advisor. The internal signal score is a reflection of geometric alignment, strictly **not a probability of profit**.
+For full deployment instructions, Cloudflare D1 provisioning, and environment secrets, see [docs/WORKFLOW.md](docs/WORKFLOW.md) and [docs/deployment/DEPLOYMENT_RUNBOOK.md](docs/deployment/DEPLOYMENT_RUNBOOK.md).

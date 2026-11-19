@@ -1,33 +1,46 @@
-# Telegram Connection, Webhook Security & Alert Delivery
+# Telegram Connection, Disconnect Flow & Alert Delivery
 
 ## Deep-Link Pairing Lifecycle
-1. **Visitor** opens `/connect-telegram` ([ConnectTelegram.tsx](file:///home/madede/BAGOMWA/PROJECTS/Axnna/axnna-web/src/pages/ConnectTelegram.tsx)).
-2. **Browser** calls `POST /api/telegram/session` to create a `PENDING` pairing token (`telegram_connection_sessions`, 10-minute expiration).
-3. **Browser** renders `https://t.me/AxnnaSignalsBot?start=<connection_token>` and polls `GET /api/telegram/session/:token`.
-4. **Polling expiration:** If `expires_at` has passed while `status` is still `PENDING`, `GET /api/telegram/session/:token` marks the session `EXPIRED` and returns `{ "status": "EXPIRED" }`.
-5. **Webhook execution:** Telegram delivers `/start <connection_token>` to `POST /api/telegram/webhook`, which atomically claims the `PENDING` session (`WHERE id = ? AND status = 'PENDING'`), creates or updates `axnna_users` keyed by `telegram_user_id`, and logs `TELEGRAM_CONNECTION_COMPLETED` to `audit_events`.
+
+1. **Visitor** opens `/connect-telegram` (`src/pages/ConnectTelegram.tsx`). If `localStorage` holds a saved `axnna_tg_session` token, the UI validates it immediately via `GET /api/telegram/session/:token` and displays connected state + disconnect control if active.
+2. **Browser** calls `POST /api/telegram/session` (rate-limited at `15/hour` per hashed actor in D1 `rate_limit_counters`) to create a 10-minute UUID pairing token in `telegram_connection_sessions`.
+3. **Browser** links to `https://t.me/AxnnaSignalsBot?start=<connection_token>` and polls `GET /api/telegram/session/:token`.
+4. **Polling outcomes:**
+   - `PENDING`: Waiting for Telegram confirmation.
+   - `EXPIRED`: 10-minute pairing window elapsed before confirmation.
+   - `CONNECTED`: Pairing completed (`alreadyConnected: true` is returned when that Telegram user was already subscribed before tapping the link, so the UI informs the user instead of silently acting like a brand-new subscription).
+   - `DISCONNECTED`: User disconnected via web or Telegram bot.
+5. **Webhook confirmation:** When Telegram delivers `/start <connection_token>` to `POST /api/telegram/webhook`, the Worker atomically claims the `PENDING` session, upserts `axnna_users` (`status = 'CONNECTED'`, `signal_notifications_enabled = 1`), records `TELEGRAM_CONNECTION_COMPLETED` in `audit_events`, and replies in Telegram — explicitly notifying users who were already connected and explaining `/status`, `/recap`, and `/disconnect`.
+
+## Disconnect Flow
+
+Subscribers can pause/stop alerts at any time from two surfaces:
+- **In Telegram (`/disconnect` or `/stop`):** Marks `axnna_users.status = 'DISCONNECTED'`, pauses deliveries, updates linked sessions so `/connect-telegram` reflects disconnected status, and confirms re-pairing is available anytime.
+- **In Web UI (`POST /api/telegram/disconnect`):** From `/connect-telegram`, clicking **Disconnect Telegram** verifies the browser's `sessionToken` matches that subscriber's completed pairing session before setting `axnna_users.status = 'DISCONNECTED'` and clearing local session state on confirmation.
 
 ## Webhook Authentication & Registration
-* `POST /api/telegram/webhook` requires `TELEGRAM_WEBHOOK_SECRET` on the Worker (`503` if unconfigured) and verifies Telegram's `X-Telegram-Bot-Api-Secret-Token` header in constant time (`401` on mismatch).
-* Incoming payloads are validated for JSON structure, message text, and valid integer `from.id` / `chat.id` before processing.
-* **Operational requirement (Stage C):** Webhook registration is manual. When calling Telegram's `setWebhook` after Worker deployment, pass the same `secret_token`:
+
+- `POST /api/telegram/webhook` fails closed (`503`) if `TELEGRAM_WEBHOOK_SECRET` is unset and verifies Telegram's `X-Telegram-Bot-Api-Secret-Token` header in constant time (`401` on mismatch, logged to `security_events`).
+- Validates JSON payload shape and integer `from.id` / `chat.id` bounds.
+- After deployment or secret rotation, register Telegram's webhook manually:
   ```text
-  https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<WORKER_DOMAIN>/api/telegram/webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>
+  https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://axnna.madede.workers.dev/api/telegram/webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>
   ```
 
-## Independent Risk Gate & Bounded Alert Retry Policy
-* Before Telegram delivery or simulated Paper Trading registration occurs, `evaluateRiskGate` (`src/engine/RiskGate.ts`) validates supported instrument allowlist, valid strategy state, market data availability and active-session wall-clock staleness (`<= 20m`, respecting FX Friday 22:00 UTC – Sunday 22:00 UTC market close), setup status (`ALERT_ELIGIBLE`), minimum technical score (`>= 65`), setup age (`<= 30m`), structural SL/TP geometry, minimum `structuralRR`, duplicate delivery suppression, and fundamental availability/risk (`FUNDAMENTAL_DATA_UNAVAILABLE` when `UNKNOWN` vs `HIGH_EVENT_RISK` when `HIGH`/`EXTREME`). Decisions are persisted atomically via `env.DB.batch` into `risk_decisions` + `audit_events` — if persistence fails, delivery and paper trade creation fail closed cleanly.
-* Alerts are delivered only when `system_config.global_notifications_enabled !== 'false'`, `RiskGate` returns `'APPROVED'`, and the user has `status = 'CONNECTED'` and `signal_notifications_enabled = 1`.
-* If live economic calendar ingestion has failed or `provider_health_state` is stale (`>2h`), `FundamentalEngine` reports `'UNKNOWN'` / `'FUNDAMENTAL UNAVAILABLE'` rather than `'NONE'` or `'NEUTRAL'`.
-* **Delivery statuses & atomic claim locks in `notification_deliveries`:**
-  * `SENDING`: Atomic pre-HTTP claim state preventing concurrent cron/manual retries from issuing duplicate `sendMessage` requests for the same row.
-  * `SENT`: Confirmed by Telegram Bot API `200` response (`provider_message_id` and `delivered_at` recorded).
-  * `PERMANENT_FAILURE`: Permanent client/user rejection (`HTTP 400`, `401`, `403` such as user blocked bot); never retried.
-  * `RETRY_SCHEDULED`: Transient failure (`HTTP 429`, `5xx`, timeout/network error) with exponential backoff (`5m, 10m, 20m, 40m, 60m`) or Telegram `retry_after`. Due rows are retried by `retryScheduledDeliveries` during Cron synchronization.
-  * `EXHAUSTED`: Transient failures reached `MAX_DELIVERY_ATTEMPTS = 5`; no further automatic retries.
+## Independent Risk Gate & Bounded Retry Policy
 
-## Interactive Bot Commands & Scheduled Daily Recap
-* `/status [INSTRUMENT]` and `/status@BotUsername [INSTRUMENT]`: Available to connected subscribers (`axnna_users.status = 'CONNECTED'`); enforces per-user command rate limiting (`10` commands per 5m) and returns current macro regime, fundamental event risk, and latest recorded setup (`EURUSD`, `GBPUSD`, `USDJPY`, `XAUUSD`; defaults to `EURUSD`).
-* `/recap` and `/recap@BotUsername`: Returns today's UTC setup digest separating `ALERTED` setups from event-risk-gated / unsent eligible setups (or `"Silence is a valid signal."` when none qualified).
-* Scheduled Daily Recap (`0 21 * * *` -> `runDailyRecap`): Runs explicitly at **21:00 UTC**, persists per-user status (`SENT` / `FAILED`, `attempt_count`, `last_error`, `next_retry_at`) in `daily_recap_deliveries` (`UNIQUE(recap_date, axnna_user_id)`), reports accurate `SUCCEEDED`/`DEGRADED`/`FAILED` job outcomes, and automatically retries failed same-day deliveries (`attempt_count < 3`) via `retryFailedDailyRecaps` during subsequent cron runs without re-sending `'SENT'` users.
-* Manual Retry (`POST /api/config/deliveries/:id/retry`): Admins can trigger a single bounded retry on eligible `RETRY_SCHEDULED` or `FAILED` deliveries directly from the Admin Operations Console (`/config`), respecting `MAX_DELIVERY_ATTEMPTS`.
+- Before delivery or paper-trade registration, `evaluateRiskGate` (`src/engine/RiskGate.ts`) verifies supported instrument allowlist, valid strategy state, active-session FX candle freshness (`<= 20m`, respecting Fri 22:00 UTC – Sun 22:00 UTC market close), setup eligibility (`ALERT_ELIGIBLE`), score (`>= 65`), setup age (`<= 30m`), structural SL/TP geometry, duplicate suppression, and fundamental availability/event risk. Decisions commit atomically via `env.DB.batch` (`risk_decisions` + `audit_events`).
+- Alerts dispatch only when `system_config.global_notifications_enabled !== 'false'`, `RiskGate` returns `'APPROVED'`, and `axnna_users.status = 'CONNECTED'` with `signal_notifications_enabled = 1`.
+- **Delivery statuses & claim locks (`notification_deliveries`):**
+  - `SENDING`: Atomic pre-HTTP claim state preventing concurrent runs from double-sending.
+  - `SENT`: Confirmed by Telegram Bot API `200` (`provider_message_id`, `delivered_at`).
+  - `PERMANENT_FAILURE`: Non-retryable `400`/`401`/`403` response (e.g., user blocked bot).
+  - `RETRY_SCHEDULED`: Transient `429`/`5xx`/network error scheduled with backoff (`5m, 10m, 20m, 40m, 60m`) or Telegram `retry_after` up to `MAX_DELIVERY_ATTEMPTS = 5`.
+  - `EXHAUSTED`: Reached `5` failed delivery attempts.
+
+## Bot Commands & 21:00 UTC Daily Recap
+
+- `/start` (bare): Explains pairing via `https://axnna.madede.workers.dev/connect-telegram` or shows active status if already connected.
+- `/status [INSTRUMENT]` (alias `/status@BotUsername`): Returns live macro regime, event risk, and latest setup for `EURUSD`, `GBPUSD`, `USDJPY`, or `XAUUSD` (rate-limited at `10` commands per 5m per user).
+- `/recap`: Returns today's UTC setup summary separating alerted setups from risk-gated setups (or `"Silence is a valid signal."` when none occurred).
+- `runDailyRecap` (`0 21 * * *`): Sends one idempotent daily digest per user (`UNIQUE(recap_date, axnna_user_id)`), with `retryFailedDailyRecaps` retrying transient failures (`attempt_count < 3`) on subsequent cron runs.

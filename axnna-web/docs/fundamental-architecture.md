@@ -1,15 +1,13 @@
 # Fundamental Architecture
 
-Axnna separates Technical Strategy execution from Macro Fundamental analysis to prevent silent logic mutations and preserve auditability.
+Axnna isolates technical `StrategyEngine` rules from macroeconomic analysis (`FundamentalEngine`) to preserve deterministic signal logic and clean auditability.
 
-## Fundamental Domain Boundaries
-1. **Macro Entities**: `USD`, `EUR`, `GBP`, `JPY`, `XAU`.
-2. **Central Bank Context**: Stores policy rates and decisions (e.g., Federal Reserve, ECB).
-3. **Fundamental Observations**: Tracks categorical state like INFLATION, EMPLOYMENT, GROWTH.
+## Domain Boundaries
 
-## Relative Analysis (Context vs Strategy)
-Instead of forcing a blunt scoring system (e.g., "USD is strong = 90"), the engine builds relative context (e.g., "EUR Growth WEAK vs USD Growth STRONG"). 
-This context is attached to the final `signals` record as `market_context`. It explains **WHY** a signal might be stronger or weaker contextually, but it **DOES NOT** override the exact technical rules of `Strategy A`.
+1. **Macro Currencies:** `USD`, `EUR`, `GBP`, `JPY` mapped across `EURUSD`, `GBPUSD`, `USDJPY`, and `XAUUSD`.
+2. **Economic Events (`economic_events`):** Scheduled and released macro indicators fetched centrally by `FreeEconomicCalendarProvider`.
+3. **Context vs Technical Rules:** Technical setup detection, scoring (`>= 65`), and SL/TP geometry run strictly on price structure (`1H` + `5M` candles). `FundamentalEngine` evaluates macro context and proximity risk afterward; `RiskGate` (`src/engine/RiskGate.ts`) then decides fail-closed whether an eligible setup can be alerted or paper-traded.
 
 ## Cost Control & Caching
-Because macro data changes slowly relative to price ticks, all Finnhub/Macro fetches are executed centrally and stored in `fundamental_observations` or `economic_events`. The frontend strictly queries Axnna's D1 cache, ensuring API costs do not scale with the number of users or browser tabs.
+
+Because macroeconomic releases update on a coarse schedule relative to `5M` price bars, ingestion executes centrally on Worker cron syncs when calendar state is `>= 25m` stale and stores normalized events in D1 `economic_events`. Both `GET /api/fundamentals/:instrument` and `/status` commands query Axnna's D1 cache rather than triggering per-visitor upstream requests.

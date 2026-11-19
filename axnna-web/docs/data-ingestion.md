@@ -1,25 +1,33 @@
 # Data Ingestion & Strategy State Persistence
 
-## Providers & Fail-Closed Behavior
+## Providers & Automatic Failover
 
-* **Market Data (`TwelveDataMarketProvider`):** Fetches `5M` and `1H` candles for `EURUSD`, `GBPUSD`, `USDJPY`, and `XAUUSD`.
-  * Missing, empty, or placeholder `TWELVEDATA_API_KEY` values fail closed immediately (`TwelveDataMarketProvider` throws and `runSynchronization` marks `market_data_state` as `FAILED` without issuing HTTP requests or altering `last_completed_candle` / `last_successful_fetch`).
-  * `MarketDataValidator.validateAndNormalize` rejects invalid/impossible OHLC data, detects duplicate timestamps, removes forming (`isCompleted: false`) candles, and sorts chronologically in UTC.
-* **Economic Calendar (`FreeEconomicCalendarProvider`):** Fetches keyless macro events from `biquote.io` (`US,EU,GB,JP`) with automatic fallback to FairEconomy's weekly calendar feed, normalizing into `economic_events`.
+- **Primary Market Data (`TwelveDataMarketProvider`, `src/providers/MarketProvider.ts`):** Fetches `5M` and `1H` candles for `EURUSD`, `GBPUSD`, `USDJPY`, and `XAUUSD`.
+  - Missing, empty, or placeholder `TWELVEDATA_API_KEY` values throw on initialization; if no fallback provider is configured, `runSynchronization` marks `market_data_state` as `FAILED` without issuing requests.
+  - If TwelveData returns HTTP `429` or an authentication failure during a sync cycle, `sync.ts` short-circuits remaining primary requests for that cycle and switches straight to fallback.
+- **Fallback Market Data (`TiingoMarketProvider`, `src/providers/MarketProvider.ts`):** When `TIINGO_API_KEY` is configured, automatically supplies validated FX/metals OHLCV candles whenever TwelveData fails or hits rate/auth limits, bounding lookbacks to preserve Starter tier limits (`50/hr`, `1,000/day`, `1 GB/mo`).
+- **Validation (`MarketDataValidator.validateAndNormalize`, `src/core-engine/MarketData.ts`):** Rejects impossible OHLC bars, deduplicates timestamps, drops unclosed forming candles (`isCompleted: false`), and sorts chronologically in UTC.
+- **Economic Calendar (`FreeEconomicCalendarProvider`, `src/providers/FundamentalProvider.ts`):** Fetches keyless macro events (`USD,EUR,GBP,JPY`) from `biquote.io` with automatic fallback to FairEconomy's weekly calendar feed, normalizing into `economic_events`.
 
-## Strategy-State Persistence & Recovery
+## Scheduled Request Budgeting
 
-* `runStrategyEngine` restores per-instrument state (`schemaVersion`, `strategyVersion`, `lastProcessed5mTimestamp`, `currentHtfBias`, `activeBsl`, `activeSsl`, `activeCandidate`, `atr`, `trueRanges`, and a bounded tail of completed `recentLtfCandles`) from D1 `strategy_state`.
-* Only newly completed `5M` candles strictly newer than `lastProcessed5mTimestamp` are processed via `StrategyEngine.processIncremental`, preserving active setups across Worker restarts and rolling query windows without duplicating setups.
-* If persisted state is missing, malformed, or has a mismatched `strategyVersion` or `schemaVersion`, the engine logs `STRATEGY_STATE_RESET` and rebuilds deterministically from the latest D1 candle window (`300 x 5M`, `200 x 1H`).
+- `CRON_SYNC` (`*/15 * * * *`, `mode: '5M_AND_STRATEGY'`):
+  - Refreshes calendar only when `ECONOMIC_CALENDAR` in `provider_health_state` is stale (`>= 25m`).
+  - Fetches `5M` bars (`4 pairs * 4/hr * 24 = 384` req/24h on active weekdays) and skips `1H` if cached `1H` candles are `HEALTHY` and `< 2h` old.
+- `CRON_1H_SYNC` (`2 * * * *`, `mode: '1H_ONLY'`):
+  - Fetches `1H` bars once per hour (`4 * 24 = 96` req/24h on active weekdays).
+- **Weekend Skip (`isFxMarketClosedUtc`):** When FX markets are closed (Fri 22:00 UTC to Sun 22:00 UTC) and cached post-close bars exist in D1, upstream fetches are skipped without marking providers degraded.
+- **Active Weekday Total:** Maximum `480` TwelveData calls/24h across both crons (comfortably inside TwelveData's `800/day` and `8/min` free-tier limits).
 
-## Operational Observability & Remaining Limits
+## Strategy-State Persistence & Paper Evaluation
 
-* **Concurrent Sync Locking (`sync_leases`):** Both `CRON_SYNC` and `MANUAL_SYNC` acquire an atomic 10-minute D1 lease (`acquireSyncLease` / `releaseSyncLease`) so concurrent runs return `ALREADY_RUNNING` (`409` on manual sync) rather than corrupting `strategy_state` or duplicating TwelveData API calls.
-* **Provider Health & Freshness (`provider_health_state` + `time.ts`):** Both `FreeEconomicCalendarProvider` (`ECONOMIC_CALENDAR`) and `TwelveDataMarketProvider` (`MARKET_DATA`) update `provider_health_state` (`HEALTHY`, `DEGRADED`, `FAILED`), using UTC-normalized parsing (`parseUtcTimestampMs`) so SQLite `CURRENT_TIMESTAMP` strings work identically across all host timezones.
-* **Scheduled Job History & Retention:** Every sync and daily recap logs execution duration and status (`SUCCEEDED`, `DEGRADED`, `FAILED`, or orphaned `STARTED` detection), while `pruneOperationalTables` deletes expired rows beyond 90–180/365d retention windows in bounded batches.
-* Historical `BacktestEngine` runs remain synchronous over `POST /api/dev/backtest` with `limit` bounded to `100..400` (`1H` bars, `1200..4800` `5M` bars) using calibrated instrument pip defaults (`getInstrumentCosts`) and optional validated pip overrides (`0..50`).
-* **Batched Candle Persistence & Request Budgeting:** Market candle upserts run via chunked `env.DB.batch(...)` (`50` statements/chunk). `5M` feeds poll every 5-minute cycle, while `1H` feeds skip redundant mid-hour fetches once the current completed `1H` candle is persisted and `HEALTHY` (~`52` calls/hour vs `96`/hour; `~900–960` active FX trading-hour calls/day / `~1,248` 24h max, requiring a paid TwelveData tier above `800`/day free quota).
-* **Paper Trading Pre-Strategy Evaluation:** During `runSynchronization`, when `5M` ingestion succeeds for an instrument, `evaluateOpenPaperTrades` runs against newly fetched completed `5M` candles prior to `runStrategyEngine`, checking `>15m` expiry before fill/invalidation, enforcing strict no-lookahead ordering (`candle.timestamp > last_evaluated_candle_timestamp` and `> signal_timestamp`), conservative spread/slippage/commission deductions via `getInstrumentCosts`, and stop-first tie-breaking.
-* **Calendar Availability & Retention:** Economic calendar availability checks `provider_health_state` (`status = 'HEALTHY'` within 2h freshness) rather than counting historical `economic_events` rows, while `pruneOperationalTables` removes obsolete `economic_events` older than `90d`.
-* **Local Historical Dataset Scope:** Local Wrangler D1 `market_candles` contains `0` rows by default. Cached JSON fixtures under `axnna-web/scripts/.cache/` (`EURUSD_1H*.json`, `EURUSD_5M*.json`, `USDJPY_1H*.json`, `USDJPY_5M*.json`, with `GBPUSD` and `XAUUSD` absent from `.cache/`) are research/offline fixtures only and must not be treated as a full multi-year 4-pair statistical validation sample without live D1 accumulation across all four pairs.
+- **Concurrent Locking (`sync_leases`):** `acquireSyncLease` / `releaseSyncLease` hold a 10-minute D1 lease so overlapping ticks return `ALREADY_RUNNING`.
+- **Delta Inserts:** Existing candle timestamps are checked so only genuinely new completed candles run through chunked `INSERT OR IGNORE` D1 batches (`50` statements/chunk).
+- **Pre-Strategy Paper Trade Evaluation:** When `5M` ingestion succeeds for an instrument, `evaluateOpenPaperTrades` processes newly closed `5M` candles before `runStrategyEngine`, checking `>15m` entry expiration, strict chronological non-lookahead ordering, calibrated spread/slippage/commission costs (`getInstrumentCosts`), and conservative stop-first tie-breaking.
+- **Incremental `StrategyEngine` State (`strategy_state`):** Restores per-instrument `PersistedStrategyState` (`schemaVersion`, `strategyVersion`, `lastProcessed5mTimestamp`, `currentHtfBias`, `activeBsl`, `activeSsl`, `activeCandidate`, `atr`, `trueRanges`, `recentLtfCandles`). Missing, malformed, or version-mismatched state triggers `STRATEGY_STATE_RESET` and rebuilds from D1 candles (`300 x 5M`, `200 x 1H`).
+
+## Telemetry, Retention & Offline Fixtures
+
+- `provider_health_state` and `scheduled_job_runs` record UTC-normalized outcomes (`parseUtcTimestampMs`).
+- `pruneOperationalTables` clears rows beyond `90d` operational / `180d` resolved / `365d` unresolved security / `2d` rate-limit windows at 21:00 UTC while keeping `audit_events` permanently.
+- Local D1 `market_candles` starts empty (`0` rows). JSON fixtures in `axnna-web/scripts/.cache/` (`EURUSD` / `USDJPY`) are offline test/research fixtures only.
