@@ -238,12 +238,12 @@ a:hover {
 .container {
   max-width: 1040px;
   margin: 0 auto;
-  padding: 0 1.5rem;
+  padding-inline: 1.5rem;
 }
 
 @media (max-width: 768px) {
   .container {
-    padding: 0 1.25rem;
+    padding-inline: 1.25rem;
   }
 }
 
@@ -267,7 +267,7 @@ a:hover {
 }
 
 .section-padding {
-  padding: clamp(1.75rem, 4vw, 3.25rem) 0;
+  padding-block: clamp(1.75rem, 4vw, 3.25rem);
 }
 
 .glass-card {
@@ -339,7 +339,10 @@ a:hover {
 
 @media (max-width: 640px) {
   .container {
-    padding: 0 1.25rem;
+    padding-inline: 1.25rem;
+  }
+  .section-padding {
+    padding-block: 1.75rem;
   }
   .glass-card {
     padding: 0.95rem 1rem;
