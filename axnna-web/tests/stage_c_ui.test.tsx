@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import Status from '../src/pages/Status';
 import Contact from '../src/pages/Contact';
 import FAQ from '../src/pages/FAQ';
 import Strategies from '../src/pages/Strategies';
+import Landing from '../src/pages/Landing';
 
 describe('Stage C Interactive UI Tests', () => {
   beforeEach(() => {
@@ -136,5 +138,18 @@ describe('Stage C Interactive UI Tests', () => {
     });
     expect(screen.getByText('+0.9R')).toBeTruthy();
     expect(screen.getByText('Score 75-84')).toBeTruthy();
+  });
+
+  it('Landing page renders side-by-side Before/After summary and responsive Why Axnna comparison', () => {
+    render(
+      <MemoryRouter>
+        <Landing />
+      </MemoryRouter>
+    );
+    expect(screen.getByText('Manual Screen Fatigue')).toBeTruthy();
+    expect(screen.getByText('Deterministic Silence')).toBeTruthy();
+    expect(screen.getByText('Why Axnna')).toBeTruthy();
+    expect(screen.getByText('Fail-closed macro veto')).toBeTruthy();
+    expect(screen.getByText('Axnna: Fail-closed macro veto')).toBeTruthy();
   });
 });

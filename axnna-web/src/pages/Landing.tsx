@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { Activity, AlertTriangle, ArrowRight, BarChart2, Bell, ChevronLeft, MessageSquare, Settings, Shield, Target } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart2, Bell, Check, ChevronLeft, MessageSquare, Minus, Settings, Shield, Target } from 'lucide-react';
 import { SetupDiagram } from '../components/SetupDiagram';
 import { DynamicHero } from './HeroComponents';
 
@@ -33,46 +33,116 @@ function InstrumentStrip() {
   );
 }
 
-function BeforeAfterToggle() {
-  const [isAxnna, setIsAxnna] = useState(true);
+const COMPARISON_ROWS = [
+  { label: 'Market Monitoring', manual: 'Constant screen time', groups: 'Human schedule', axnna: 'Multi-provider 24/5 feed' },
+  { label: 'Macro Risk Gate', manual: 'Ad-hoc / missed news', groups: 'Rarely structured', axnna: 'Fail-closed macro veto' },
+  { label: 'Signal Filtering', manual: 'Emotional entries', groups: 'Opaque calls', axnna: 'Deterministic >= 65% rule' },
+  { label: 'Delivery Channel', manual: 'Chart alerts everywhere', groups: 'Noisy chat spam', axnna: 'Telegram-native alerts' },
+  { label: 'Audit & Tracking', manual: 'Unlogged discretion', groups: 'Cherry-picked stats', axnna: 'Forward paper tracked' },
+];
 
+function BeforeAfterSummary() {
   return (
-    <div style={{ padding: '0 0 2.5rem', textAlign: 'center' }}>
-      <div style={{ display: 'inline-flex', backgroundColor: 'var(--card-bg)', borderRadius: '9px', padding: '0.2rem', border: '1px solid var(--border-color)', marginBottom: '1.25rem' }}>
-        <button
-          type="button"
-          onClick={() => setIsAxnna(false)}
-          style={{ padding: '0.42rem 1.1rem', borderRadius: '7px', border: 'none', background: !isAxnna ? 'var(--text-color)' : 'transparent', color: !isAxnna ? 'var(--bg-color)' : 'var(--text-muted)', fontWeight: 600, fontSize: '0.85rem', fontFamily: 'inherit', cursor: 'pointer', transition: 'all 0.2s' }}
-        >
-          Before Axnna
-        </button>
-        <button
-          type="button"
-          onClick={() => setIsAxnna(true)}
-          style={{ padding: '0.42rem 1.1rem', borderRadius: '7px', border: 'none', background: isAxnna ? 'var(--text-color)' : 'transparent', color: isAxnna ? 'var(--bg-color)' : 'var(--text-muted)', fontWeight: 600, fontSize: '0.85rem', fontFamily: 'inherit', cursor: 'pointer', transition: 'all 0.2s' }}
-        >
-          After Axnna
-        </button>
+    <div className="before-after-grid">
+      <div className="glass-card" style={{ borderStyle: 'dashed', borderColor: 'rgba(248, 81, 73, 0.45)', padding: '1rem 1.15rem' }}>
+        <div className="admin-kpi-label" style={{ color: 'var(--error-color)', marginBottom: '0.35rem' }}>Before Axnna</div>
+        <h3 style={{ fontSize: '1.02rem', fontWeight: 600, marginBottom: '0.3rem' }}>Manual Screen Fatigue</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.86rem', lineHeight: 1.5 }}>
+          Watching charts all day, missing calendar releases, and forcing low-quality setups.
+        </p>
       </div>
-
-      <div style={{ maxWidth: '660px', margin: '0 auto' }}>
-        {!isAxnna ? (
-          <div className="glass-card" style={{ padding: '1.2rem 1.4rem', borderStyle: 'dashed', borderColor: 'var(--error-color)' }}>
-            <h3 style={{ fontSize: '1.1rem', marginBottom: '0.45rem', color: 'var(--error-color)' }}>Manual Screen Fatigue</h3>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', lineHeight: 1.55 }}>
-              Watching charts for 12+ hours, second-guessing liquidity sweeps, missing high-impact news releases, and forcing trades out of boredom.
-            </p>
-          </div>
-        ) : (
-          <div className="glass-card" style={{ padding: '1.2rem 1.4rem', borderColor: 'var(--success-color)' }}>
-            <h3 style={{ fontSize: '1.1rem', marginBottom: '0.45rem', color: 'var(--success-color)' }}>Deterministic Silence</h3>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.92rem', lineHeight: 1.55 }}>
-              Step away from the screens. Axnna processes completed candles every cycle and only notifies you when mathematical structure and macro safety agree.
-            </p>
-          </div>
-        )}
+      <div className="glass-card" style={{ borderColor: 'rgba(45, 212, 126, 0.45)', padding: '1rem 1.15rem' }}>
+        <div className="admin-kpi-label" style={{ color: 'var(--success-color)', marginBottom: '0.35rem' }}>After Axnna</div>
+        <h3 style={{ fontSize: '1.02rem', fontWeight: 600, marginBottom: '0.3rem' }}>Deterministic Silence</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.86rem', lineHeight: 1.5 }}>
+          Step away from screens. Alerts trigger only when structure and macro safety agree.
+        </p>
       </div>
     </div>
+  );
+}
+
+function WhyAxnnaComparison() {
+  return (
+    <>
+      {/* Desktop Spotlight Table */}
+      <div className="glass-card comparison-desktop" style={{ padding: 0, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.88rem' }}>
+          <thead>
+            <tr style={{ backgroundColor: 'var(--surface-elevated)' }}>
+              <th style={{ padding: '0.85rem 1.1rem', borderBottom: '1px solid var(--border-color)' }}>Feature</th>
+              <th style={{ padding: '0.85rem 1.1rem', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>Manual Trading</th>
+              <th style={{ padding: '0.85rem 1.1rem', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>Signal Groups</th>
+              <th className="comparison-axnna-col" style={{ padding: '0.85rem 1.1rem', borderBottom: '1px solid var(--border-color)', color: 'var(--accent-color)' }}>
+                Axnna
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {COMPARISON_ROWS.map((row, i) => {
+              const rowBorder = i < COMPARISON_ROWS.length - 1 ? '1px solid var(--border-color)' : 'none';
+              return (
+                <tr key={row.label} style={{ borderBottom: rowBorder }}>
+                  <td style={{ padding: '0.82rem 1.1rem', fontWeight: 600 }}>{row.label}</td>
+                  <td style={{ padding: '0.82rem 1.1rem', color: 'var(--text-muted)' }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <Minus size={13} color="var(--text-muted)" />
+                      <span>{row.manual}</span>
+                    </span>
+                  </td>
+                  <td style={{ padding: '0.82rem 1.1rem', color: 'var(--text-muted)' }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                      <Minus size={13} color="var(--text-muted)" />
+                      <span>{row.groups}</span>
+                    </span>
+                  </td>
+                  <td className="comparison-axnna-col" style={{ padding: '0.82rem 1.1rem', fontWeight: 600 }}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem' }}>
+                      <Check size={14} color="var(--success-color)" />
+                      <span>{row.axnna}</span>
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Mobile Zero-Scroll Comparison Cards */}
+      <div className="comparison-mobile">
+        {COMPARISON_ROWS.map((row) => (
+          <div key={row.label} className="glass-card" style={{ padding: '0.85rem 0.95rem', display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
+            <div style={{ fontWeight: 600, fontSize: '0.92rem' }}>{row.label}</div>
+            <div
+              className="comparison-axnna-col"
+              style={{
+                borderRadius: '7px',
+                padding: '0.45rem 0.65rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.45rem',
+                fontSize: '0.84rem',
+                fontWeight: 600,
+              }}
+            >
+              <Check size={14} color="var(--success-color)" style={{ flexShrink: 0 }} />
+              <span>Axnna: {row.axnna}</span>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0.5rem', fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+              <div>
+                <span className="mono" style={{ display: 'block', fontSize: '0.68rem', opacity: 0.8 }}>MANUAL</span>
+                <span>{row.manual}</span>
+              </div>
+              <div>
+                <span className="mono" style={{ display: 'block', fontSize: '0.68rem', opacity: 0.8 }}>GROUPS</span>
+                <span>{row.groups}</span>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -267,41 +337,16 @@ export default function Landing() {
       <TelegramTabs />
 
       <section className="section-padding container">
-        <BeforeAfterToggle />
+        <BeforeAfterSummary />
 
-        <div style={{ textAlign: 'center', marginBottom: '1.75rem' }}>
+        <div style={{ textAlign: 'center', marginBottom: '1.5rem' }}>
           <h2 className="section-title">Why Axnna</h2>
-          <p style={{ color: 'var(--text-muted)', fontSize: '1rem', marginTop: '0.45rem' }}>Built to separate noise from structure.</p>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.96rem', marginTop: '0.4rem' }}>
+            Built to separate market structure from screen noise.
+          </p>
         </div>
 
-        <div className="glass-card" style={{ overflowX: 'auto', padding: 0 }}>
-          <table style={{ width: '100%', minWidth: '560px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.9rem' }}>
-            <thead>
-              <tr style={{ backgroundColor: 'var(--surface-elevated)' }}>
-                <th style={{ padding: '0.85rem 1.15rem', borderBottom: '1px solid var(--border-color)' }}>Feature</th>
-                <th style={{ padding: '0.85rem 1.15rem', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>Manual Trading</th>
-                <th style={{ padding: '0.85rem 1.15rem', borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>Signal Groups</th>
-                <th style={{ padding: '0.85rem 1.15rem', borderBottom: '1px solid var(--border-color)', color: 'var(--accent-color)' }}>Axnna</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[
-                { label: 'Market Monitoring', m: 'Constant attention', g: 'Human schedule', a: 'Automated 24/5' },
-                { label: 'Fundamental Context', m: 'Manual tracking', g: 'Rarely structured', a: 'Integrated Risk Gate' },
-                { label: 'Risk Filtering', m: 'Emotional', g: 'Opaque', a: 'Deterministic >= 65%' },
-                { label: 'Delivery', m: 'Screen time', g: 'Chat spam', a: 'Telegram-native alerts' },
-                { label: 'Transparency', m: 'Subjective', g: 'Unverified', a: 'Documented Pipeline' },
-              ].map((row, i) => (
-                <tr key={row.label} style={{ borderBottom: i < 4 ? '1px solid var(--border-color)' : 'none' }}>
-                  <td style={{ padding: '0.82rem 1.15rem', fontWeight: 500 }}>{row.label}</td>
-                  <td style={{ padding: '0.82rem 1.15rem', color: 'var(--text-muted)' }}>{row.m}</td>
-                  <td style={{ padding: '0.82rem 1.15rem', color: 'var(--text-muted)' }}>{row.g}</td>
-                  <td style={{ padding: '0.82rem 1.15rem', fontWeight: 600 }}>{row.a}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <WhyAxnnaComparison />
       </section>
 
       <section className="section-padding container" style={{ paddingBottom: '1rem' }}>

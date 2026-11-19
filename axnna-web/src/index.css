@@ -655,6 +655,43 @@ a:hover {
   font-size: 0.9rem;
 }
 
+/* Before / After & Why Axnna Comparison */
+.before-after-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+  margin-bottom: 2rem;
+}
+
+.comparison-desktop {
+  display: block;
+}
+
+.comparison-mobile {
+  display: none;
+}
+
+.comparison-axnna-col {
+  background: rgba(47, 129, 247, 0.08);
+  border-left: 1px solid rgba(47, 129, 247, 0.25);
+}
+
+@media (max-width: 720px) {
+  .before-after-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.65rem;
+    margin-bottom: 1.5rem;
+  }
+  .comparison-desktop {
+    display: none;
+  }
+  .comparison-mobile {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+  }
+}
+
 /* Subtle Landing Animations */
 @keyframes axnna-pulse {
   0%, 100% { opacity: 0.35; }
