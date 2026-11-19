@@ -399,3 +399,47 @@ a:hover {
   border: 1px solid rgba(255, 59, 48, 0.3);
   color: var(--error-color);
 }
+
+/* Lightweight Landing Animations */
+@keyframes axnna-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+@keyframes axnna-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes axnna-marquee-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.axnna-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--success-color);
+  animation: axnna-pulse 2s ease-in-out infinite;
+}
+
+.axnna-fade-in {
+  animation: axnna-fade-in 0.35s ease both;
+}
+
+.axnna-marquee-track {
+  display: flex;
+  gap: 4rem;
+  width: max-content;
+  padding-left: 2rem;
+  animation: axnna-marquee-scroll 24s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .axnna-pulse-dot,
+  .axnna-fade-in,
+  .axnna-marquee-track {
+    animation: none;
+  }
+}

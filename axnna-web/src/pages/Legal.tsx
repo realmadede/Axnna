@@ -1,10 +1,16 @@
 
+import { type ReactNode } from 'react';
 import { useParams, Navigate } from 'react-router-dom';
+
+interface LegalEntry {
+  title: string;
+  text: ReactNode;
+}
 
 export default function Legal() {
   const { page } = useParams();
 
-  const content: Record<string, any> = {
+  const content: Record<string, LegalEntry> = {
     privacy: {
       title: 'Privacy Policy',
       text: (

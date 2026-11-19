@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import worker, { Env, retryFailedDailyRecaps, runDailyRecap } from '../src/worker';
+import worker, { Env, readJsonBodyWithLimit, retryFailedDailyRecaps, runDailyRecap } from '../src/worker';
 import {
   acquireSyncLease,
   computeHmacActorHash,
@@ -34,93 +34,40 @@ describe('Stage C.2 Audit Remediation Regression Suite', () => {
     vi.unstubAllGlobals();
   });
 
-  it('FND-01 & FND-10: enforces analytics 4KB body limit, conversion isolation, visitor inflation cap, rate limit, and bounded retention', async () => {
-    // 1. Oversized body (>4KB) rejected with 413
+  it('FND-01 & FND-10: enforces request body limits, disables removed analytics writes, and prunes bounded retention', async () => {
+    // 1. Oversized body (>8KB) rejected by readJsonBodyWithLimit with 413
     const bigBody = JSON.stringify({
-      eventType: 'PAGE_VIEW',
-      path: '/',
-      visitorId: 'visitor_12345678',
-      sessionId: 'session_12345678',
-      referrer: 'https://example.com/' + 'a'.repeat(4500),
+      instrument: 'EURUSD',
+      note: 'a'.repeat(9000),
     });
-    const tooLarge = await worker.fetch(
-      new Request('https://staging.axnna.example/api/analytics/event', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': String(bigBody.length) },
-        body: bigBody,
-      }),
-      env
-    );
-    expect(tooLarge.status).toBe(413);
-
-    // 2. Spoofed server conversion event rejected with 400
-    for (const evtType of ['TELEGRAM_CONNECT_COMPLETED', 'REGISTRATION_COMPLETED', 'ALERT_PREF_UPDATED', 'APP_ACTIVITY']) {
-      const spoofed = await worker.fetch(
-        new Request('https://staging.axnna.example/api/analytics/event', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            eventType: evtType,
-            path: '/',
-            visitorId: 'visitor_12345678',
-            sessionId: 'session_12345678',
-          }),
-        }),
-        env
-      );
-      expect(spoofed.status).toBe(400);
+    const oversizedReq = new Request('https://staging.axnna.example/api/dev/backtest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': String(bigBody.length) },
+      body: bigBody,
+    });
+    const parsed = await readJsonBodyWithLimit(oversizedReq, 8192);
+    expect('error' in parsed).toBe(true);
+    if ('error' in parsed) {
+      expect(parsed.status).toBe(413);
     }
 
-    // 3. Path with PII query rejected
-    const badPath = await worker.fetch(
+    // 2. Removed analytics ingestion returns 404 without writing to D1
+    const removedAnalytics = await worker.fetch(
       new Request('https://staging.axnna.example/api/analytics/event', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           eventType: 'PAGE_VIEW',
-          path: '/?email=user@secret.com',
+          path: '/',
           visitorId: 'visitor_12345678',
           sessionId: 'session_12345678',
         }),
       }),
       env
     );
-    expect(badPath.status).toBe(400);
+    expect(removedAnalytics.status).toBe(404);
 
-    // 4. Deduplication + unique visitor inflation defense (>5 distinct visitorIds from one IP per hour blocked)
-    const ipHeaders = { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.88' };
-    for (let i = 1; i <= 5; i++) {
-      const okRes = await worker.fetch(
-        new Request('https://staging.axnna.example/api/analytics/event', {
-          method: 'POST',
-          headers: ipHeaders,
-          body: JSON.stringify({
-            eventType: 'PAGE_VIEW',
-            path: `/p${i}`,
-            visitorId: `visitor_0000000${i}`,
-            sessionId: `session_0000000${i}`,
-          }),
-        }),
-        env
-      );
-      expect(okRes.status).toBe(202);
-    }
-    const inflated = await worker.fetch(
-      new Request('https://staging.axnna.example/api/analytics/event', {
-        method: 'POST',
-        headers: ipHeaders,
-        body: JSON.stringify({
-          eventType: 'PAGE_VIEW',
-          path: '/p6',
-          visitorId: 'visitor_00000006',
-          sessionId: 'session_00000006',
-        }),
-      }),
-      env
-    );
-    expect(inflated.status).toBe(429);
-
-    // 5. Retention pruning deletes >90d analytics & jobs, >180d resolved security, preserves audit_events
+    // 3. Retention pruning deletes >90d analytics & jobs, >180d resolved security, preserves audit_events
     const oldSql = toSqliteUtcTimestamp(Date.now() - 120 * 86400 * 1000);
     const oldSecSql = toSqliteUtcTimestamp(Date.now() - 200 * 86400 * 1000);
     const oldIso = new Date(Date.now() - 120 * 86400 * 1000).toISOString();
@@ -334,37 +281,16 @@ describe('Stage C.2 Audit Remediation Regression Suite', () => {
     expect(apiExact.status).toBe(404);
     expect(await apiExact.json()).toEqual({ error: 'Not Found' });
 
-    // 4. Contact >8KB rejected (413), duplicate rejected (409)
-    const bigFb = JSON.stringify({ category: 'Bug Report', message: 'x'.repeat(9000) });
-    const fbLarge = await worker.fetch(
+    // 4. Removed /api/feedback returns 404 JSON
+    const fbRemoved = await worker.fetch(
       new Request('https://staging.axnna.example/api/feedback', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': String(bigFb.length) },
-        body: bigFb,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: 'Bug Report', message: 'Check removed contact route.' }),
       }),
       env
     );
-    expect(fbLarge.status).toBe(413);
-
-    const fbPayload = JSON.stringify({ category: 'Bug Report', message: 'Duplicate check valid message.' });
-    const fb1 = await worker.fetch(
-      new Request('https://staging.axnna.example/api/feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.77' },
-        body: fbPayload,
-      }),
-      env
-    );
-    expect(fb1.status).toBe(201);
-    const fbDup = await worker.fetch(
-      new Request('https://staging.axnna.example/api/feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.77' },
-        body: fbPayload,
-      }),
-      env
-    );
-    expect(fbDup.status).toBe(409);
+    expect(fbRemoved.status).toBe(404);
 
     // 5. Telegram bot-suffixed commands & rate limiting
     sqlite.prepare(`INSERT INTO axnna_users (id, telegram_user_id, telegram_chat_id, status, connected_at) VALUES ('u_cmd', '333', '333', 'CONNECTED', '2026-11-17T00:00:00Z')`).run();

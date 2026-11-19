@@ -418,19 +418,24 @@ describe('Stage D Risk Gate, Paper Trading Lifecycle, Security Boundaries & Stag
     );
     expect(encodedApi.status).toBe(404);
 
-    // SQL injection payload in feedback does not execute SQL or crash
-    const sqliRes = await worker.fetch(
+    // Removed feedback/analytics routes return 404 JSON and SQL injection payload in path params does not crash
+    const removedFeedback = await worker.fetch(
       new Request('https://axnna-staging.madede.workers.dev/api/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          category: 'Bug Report',
-          message: "Test'; DROP TABLE signals; -- injection safety check.",
-        }),
+        body: JSON.stringify({ category: 'Bug Report', message: 'Check removed endpoint' }),
       }),
       env
     );
-    expect(sqliRes.status).toBe(201);
+    expect(removedFeedback.status).toBe(404);
+
+    const sqliRes = await worker.fetch(
+      new Request(
+        `https://axnna-staging.madede.workers.dev/api/telegram/session/${encodeURIComponent("'; DROP TABLE signals; --")}`
+      ),
+      env
+    );
+    expect(sqliRes.status).toBe(404);
     expect(sqlite.prepare(`SELECT COUNT(*) as c FROM signals`).get()).toBeDefined();
   });
 });

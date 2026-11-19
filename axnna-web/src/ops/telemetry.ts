@@ -14,6 +14,22 @@ export interface SecurityEventInput {
   details?: Record<string, unknown> | null;
 }
 
+export interface ScheduledJobRow {
+  id: string;
+  job_name: string;
+  status: string;
+  started_at: string;
+  finished_at?: string | null;
+  duration_ms?: number | null;
+  error_summary?: string | null;
+}
+
+function getMetaChanges(result: unknown): number {
+  if (!result || typeof result !== 'object') return 0;
+  const meta = (result as { meta?: { changes?: unknown } }).meta;
+  return Number(meta?.changes ?? 0);
+}
+
 const KNOWN_PLACEHOLDERS = new Set([
   'mock_key',
   'changeme',
@@ -258,7 +274,7 @@ export async function acquireNamedLease(
       .bind(lockName, ownerId, acquiredIso, expiresIso)
       .run();
 
-    const changes = Number((res as any)?.meta?.changes ?? 0);
+    const changes = getMetaChanges(res);
     if (changes > 0) {
       return { acquired: true, expiresAt: expiresIso };
     }
@@ -286,7 +302,7 @@ export async function releaseNamedLease(db: D1Database, lockName: string, ownerI
       .prepare(`DELETE FROM sync_leases WHERE lock_name = ? AND owner_id = ?`)
       .bind(lockName, ownerId)
       .run();
-    return Number((res as any)?.meta?.changes ?? 0) > 0;
+    return getMetaChanges(res) > 0;
   } catch {
     return false;
   }
@@ -337,7 +353,7 @@ export async function checkD1RateLimit(
       .bind(bucketKey, nowSql, nowSql, cutoffSql, cutoffSql, cutoffSql, maxRequests)
       .run();
 
-    const changes = Number((res as any)?.meta?.changes ?? 0);
+    const changes = getMetaChanges(res);
     const row = await db
       .prepare(`SELECT window_start, count FROM rate_limit_counters WHERE bucket_key = ?`)
       .bind(bucketKey)
@@ -372,126 +388,51 @@ export async function pruneOperationalTables(
   const cutoff365dSql = toSqliteUtcTimestamp(nowMs - 365 * 24 * 60 * 60 * 1000);
   const cutoff2dSql = toSqliteUtcTimestamp(nowMs - 2 * 24 * 60 * 60 * 1000);
 
-  let analyticsDeleted = 0;
-  let jobsDeleted = 0;
-  let securityDeleted = 0;
-  let rateLimitsDeleted = 0;
-  let economicEventsDeleted = 0;
-  let marketCandlesDeleted = 0;
+  const pruneBatch = async (sql: string, ...bindings: string[]): Promise<number> => {
+    try {
+      const res = await db.prepare(sql).bind(...bindings).run();
+      return getMetaChanges(res);
+    } catch {
+      return 0;
+    }
+  };
 
-  try {
-    const r1 = await db
-      .prepare(
-        `DELETE FROM analytics_events WHERE id IN (
-           SELECT id FROM analytics_events WHERE created_at < ? LIMIT 500
-         )`
-      )
-      .bind(cutoff90dSql)
-      .run();
-    analyticsDeleted = Number((r1 as any)?.meta?.changes ?? 0);
-  } catch {
-    // Ignore table errors
-  }
-
-  try {
-    const r2 = await db
-      .prepare(
-        `DELETE FROM scheduled_job_runs WHERE id IN (
-           SELECT id FROM scheduled_job_runs WHERE started_at < ? AND status != 'STARTED' LIMIT 500
-         )`
-      )
-      .bind(cutoff90dIso)
-      .run();
-    jobsDeleted = Number((r2 as any)?.meta?.changes ?? 0);
-  } catch {
-    // Ignore table errors
-  }
-
-  try {
-    const r3 = await db
-      .prepare(
-        `DELETE FROM security_events WHERE id IN (
-           SELECT id FROM security_events
-           WHERE (resolution_status = 'RESOLVED' AND created_at < ?)
-              OR created_at < ?
-           LIMIT 500
-         )`
-      )
-      .bind(cutoff180dSql, cutoff365dSql)
-      .run();
-    securityDeleted = Number((r3 as any)?.meta?.changes ?? 0);
-  } catch {
-    // Ignore table errors
-  }
-
-  try {
-    const r4 = await db
-      .prepare(
-        `DELETE FROM rate_limit_counters WHERE bucket_key IN (
-           SELECT bucket_key FROM rate_limit_counters WHERE updated_at < ? LIMIT 500
-         )`
-      )
-      .bind(cutoff2dSql)
-      .run();
-    rateLimitsDeleted = Number((r4 as any)?.meta?.changes ?? 0);
-  } catch {
-    // Ignore table errors
-  }
-
-  try {
-    const r5 = await db
-      .prepare(
-        `DELETE FROM economic_events WHERE id IN (
-           SELECT id FROM economic_events WHERE timestamp < ? LIMIT 500
-         )`
-      )
-      .bind(cutoff90dIso)
-      .run();
-    economicEventsDeleted = Number((r5 as any)?.meta?.changes ?? 0);
-  } catch {
-    // Ignore table errors
-  }
-
-  try {
-    const r6 = await db
-      .prepare(
-        `DELETE FROM market_candles WHERE id IN (
-           SELECT id FROM market_candles WHERE timestamp < ? LIMIT 500
-         )`
-      )
-      .bind(cutoff90dIso)
-      .run();
-    marketCandlesDeleted = Number((r6 as any)?.meta?.changes ?? 0);
-  } catch {
-    // Ignore table errors
-  }
+  const [
+    analyticsDeleted,
+    jobsDeleted,
+    securityDeleted,
+    rateLimitsDeleted,
+    economicEventsDeleted,
+    marketCandlesDeleted,
+  ] = await Promise.all([
+    pruneBatch(
+      `DELETE FROM analytics_events WHERE id IN (SELECT id FROM analytics_events WHERE created_at < ? LIMIT 500)`,
+      cutoff90dSql
+    ),
+    pruneBatch(
+      `DELETE FROM scheduled_job_runs WHERE id IN (SELECT id FROM scheduled_job_runs WHERE started_at < ? AND status != 'STARTED' LIMIT 500)`,
+      cutoff90dIso
+    ),
+    pruneBatch(
+      `DELETE FROM security_events WHERE id IN (SELECT id FROM security_events WHERE (resolution_status = 'RESOLVED' AND created_at < ?) OR created_at < ? LIMIT 500)`,
+      cutoff180dSql,
+      cutoff365dSql
+    ),
+    pruneBatch(
+      `DELETE FROM rate_limit_counters WHERE bucket_key IN (SELECT bucket_key FROM rate_limit_counters WHERE updated_at < ? LIMIT 500)`,
+      cutoff2dSql
+    ),
+    pruneBatch(
+      `DELETE FROM economic_events WHERE id IN (SELECT id FROM economic_events WHERE timestamp < ? LIMIT 500)`,
+      cutoff90dIso
+    ),
+    pruneBatch(
+      `DELETE FROM market_candles WHERE id IN (SELECT id FROM market_candles WHERE timestamp < ? LIMIT 500)`,
+      cutoff90dIso
+    ),
+  ]);
 
   return { analyticsDeleted, jobsDeleted, securityDeleted, rateLimitsDeleted, economicEventsDeleted, marketCandlesDeleted };
-}
-
-export function classifyUserAgent(ua: string | null): {
-  deviceCategory: 'mobile' | 'tablet' | 'desktop' | 'unknown';
-  browserCategory: string;
-} {
-  if (!ua) return { deviceCategory: 'unknown', browserCategory: 'Unknown' };
-  const lower = ua.toLowerCase();
-
-  let deviceCategory: 'mobile' | 'tablet' | 'desktop' | 'unknown' = 'desktop';
-  if (/ipad|tablet|playbook|silk|(android(?!.*mobile))/.test(lower)) {
-    deviceCategory = 'tablet';
-  } else if (/mobile|iphone|ipod|android.*mobile|windows phone/.test(lower)) {
-    deviceCategory = 'mobile';
-  } else if (/bot|crawler|spider|curl|wget/.test(lower)) {
-    deviceCategory = 'unknown';
-  }
-
-  let browserCategory = 'Other';
-  if (lower.includes('edg/')) browserCategory = 'Edge';
-  else if (lower.includes('chrome/') || lower.includes('crios/')) browserCategory = 'Chrome';
-  else if (lower.includes('firefox/') || lower.includes('fxios/')) browserCategory = 'Firefox';
-  else if (lower.includes('safari/') && !lower.includes('chrome/')) browserCategory = 'Safari';
-
-  return { deviceCategory, browserCategory };
 }
 
 export function getSecretStatus(env: Env): Array<{ key: string; configured: boolean; scope: string }> {
@@ -514,7 +455,7 @@ export interface SubsystemHealth {
 export async function evaluateSystemHealth(env: Env): Promise<{
   overallStatus: HealthStatus;
   subsystems: SubsystemHealth[];
-  recentJobs: any[];
+  recentJobs: ScheduledJobRow[];
 }> {
   const secretMap = Object.fromEntries(getSecretStatus(env).map((s) => [s.key, s.configured]));
   const nowMs = Date.now();
@@ -702,13 +643,13 @@ export async function evaluateSystemHealth(env: Env): Promise<{
   });
 
   // 6. Scheduled jobs health (handles STARTED orphans and stale CRON >35m under */15 schedule)
-  const recentJobs = jobsRes.results || [];
+  const recentJobs = (jobsRes.results || []) as unknown as ScheduledJobRow[];
 
   let jobStatus: HealthStatus = 'UNKNOWN';
   let jobDetail = 'No scheduled runs recorded yet';
   let lastJobTime: string | null = null;
   if (recentJobs.length > 0) {
-    const latest = recentJobs[0] as any;
+    const latest = recentJobs[0];
     const latestStartMs = parseUtcTimestampMs(latest.started_at);
     const latestFinishMs = parseUtcTimestampMs(latest.finished_at);
     lastJobTime = normalizeUtcIso(latest.started_at);

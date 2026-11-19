@@ -38,8 +38,8 @@ export default function Status() {
       if (!res.ok) throw new Error(`Status check returned HTTP ${res.status}`);
       const json = (await res.json()) as PublicStatusPayload;
       setData(json);
-    } catch (err: any) {
-      setError(err.message || 'Unable to load system status.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to load system status.');
     } finally {
       setLoading(false);
     }

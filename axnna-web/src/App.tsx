@@ -2,7 +2,6 @@ import { Moon, Sun } from 'lucide-react';
 import React, { Suspense, lazy, useState, useEffect } from 'react';
 import { Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
 import { AxnnaLogo } from './components/AxnnaLogo';
-import { trackAnalyticsEvent } from './utils/analytics';
 
 import Status from './pages/Status';
 
@@ -61,10 +60,6 @@ function Layout({ children }: { children: React.ReactNode }) {
       document.documentElement.setAttribute('data-theme', 'dark');
     }
   }, []);
-
-  useEffect(() => {
-    trackAnalyticsEvent('PAGE_VIEW', location.pathname);
-  }, [location.pathname]);
 
   const toggleTheme = () => {
     if (isLight) {

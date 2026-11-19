@@ -79,130 +79,34 @@ describe('Stage C Unified Routing, Telemetry, Operations & Missing Features', ()
     expect(serialized).not.toContain('stage-c-admin-passphrase');
   });
 
-  it('validates, honeypot-filters, rate-limits, persists, and admin-triages POST /api/feedback', async () => {
-    const invalid = await worker.fetch(
+  it('removes legacy /api/feedback, /api/analytics/event, /api/signals, and /api/config/* endpoints cleanly while preserving Telegram pairing', async () => {
+    const removedFeedback = await worker.fetch(
       new Request('https://staging.axnna.example/api/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category: 'InvalidCat', message: 'short' }),
+        body: JSON.stringify({ category: 'Bug Report', message: 'Legacy feedback endpoint check.' }),
       }),
       env
     );
-    expect(invalid.status).toBe(400);
+    expect(removedFeedback.status).toBe(404);
 
-    // Honeypot triggered returns 201 without writing to contact_submissions
-    const honeypot = await worker.fetch(
-      new Request('https://staging.axnna.example/api/feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          category: 'General Inquiry',
-          message: 'Bot message that should not be saved.',
-          website: 'https://spam.invalid',
-        }),
-      }),
-      env
-    );
-    expect(honeypot.status).toBe(201);
-    expect((sqlite.prepare(`SELECT COUNT(*) as c FROM contact_submissions`).get() as any).c).toBe(0);
-
-    // Three allowed submissions per hour from the same client IP hash
-    const headers = { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.24' };
-    let firstId = '';
-    for (let i = 0; i < 3; i++) {
-      const res = await worker.fetch(
-        new Request('https://staging.axnna.example/api/feedback', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            category: 'Bug Report',
-            message: `Valid feedback submission number ${i + 1} describing issue.`,
-            contact: '@trader_handle',
-          }),
-        }),
-        env
-      );
-      expect(res.status).toBe(201);
-      const data = (await res.json()) as any;
-      if (i === 0) firstId = data.id;
-    }
-
-    // Fourth submission within the hour triggers 429 and logs a security event
-    const limited = await worker.fetch(
-      new Request('https://staging.axnna.example/api/feedback', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          category: 'Bug Report',
-          message: 'Fourth submission exceeding hourly rate limit.',
-        }),
-      }),
-      env
-    );
-    expect(limited.status).toBe(429);
-
-    const secRow = sqlite
-      .prepare(`SELECT event_type, source_category FROM security_events WHERE event_type = 'CONTACT_RATE_LIMITED'`)
-      .get() as any;
-    expect(secRow).toEqual({ event_type: 'CONTACT_RATE_LIMITED', source_category: 'RATE_LIMIT' });
-
-    // Persisted feedback row in D1
-    const saved = sqlite.prepare(`SELECT status, category FROM contact_submissions WHERE id = ?`).get(firstId) as any;
-    expect(saved).toMatchObject({ status: 'NEW', category: 'Bug Report' });
-  });
-
-  it('ingests privacy-safe analytics events and removes /api/signals & /api/config/* endpoints cleanly', async () => {
-    const badAnalytics = await worker.fetch(
+    const removedAnalytics = await worker.fetch(
       new Request('https://staging.axnna.example/api/analytics/event', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventType: 'UNKNOWN_EVENT', path: 'no-slash' }),
+        body: JSON.stringify({ eventType: 'PAGE_VIEW', path: '/' }),
       }),
       env
     );
-    expect(badAnalytics.status).toBe(400);
+    expect(removedAnalytics.status).toBe(404);
 
-    const badConversion = await worker.fetch(
-      new Request('https://staging.axnna.example/api/analytics/event', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          eventType: 'TELEGRAM_CONNECT_COMPLETED',
-          path: '/connect-telegram',
-          visitorId: 'visitor_12345678',
-          sessionId: 'session_12345678',
-        }),
-      }),
-      env
-    );
-    expect(badConversion.status).toBe(400);
-
-    for (const evt of [
-      { eventType: 'PAGE_VIEW', path: '/' },
-      { eventType: 'TELEGRAM_CONNECT_STARTED', path: '/connect-telegram' },
-    ]) {
-      const req = new Request('https://staging.axnna.example/api/analytics/event', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Linux; Android 14) Chrome/122.0 Mobile Safari/537.36',
-        },
-        body: JSON.stringify({
-          ...evt,
-          visitorId: 'visitor_12345678',
-          sessionId: 'session_12345678',
-          referrer: 'https://search.example/results?q=axnna',
-        }),
-      });
-      (req as any).cf = { country: 'KE' };
-      const res = await worker.fetch(req, env);
-      expect(res.status).toBe(202);
-    }
-
-    // Server-verified Telegram connection writes TELEGRAM_CONNECT_COMPLETED
+    // Server-verified Telegram pairing works end-to-end without writing analytics_events
     const sessRes = await worker.fetch(new Request('https://staging.axnna.example/api/telegram/session', { method: 'POST' }), env);
+    expect(sessRes.status).toBe(200);
     const { token } = (await sessRes.json()) as any;
-    await worker.fetch(
+    expect(typeof token).toBe('string');
+
+    const hookRes = await worker.fetch(
       new Request('https://staging.axnna.example/api/telegram/webhook', {
         method: 'POST',
         headers: {
@@ -216,6 +120,11 @@ describe('Stage C Unified Routing, Telemetry, Operations & Missing Features', ()
       }),
       env
     );
+    expect(hookRes.status).toBe(200);
+
+    const pollRes = await worker.fetch(new Request(`https://staging.axnna.example/api/telegram/session/${token}`), env);
+    expect(pollRes.status).toBe(200);
+    expect(await pollRes.json()).toEqual({ status: 'CONNECTED' });
 
     // Removed /api/signals and /api/config/overview return 404 JSON
     const removedSignals = await worker.fetch(new Request('https://staging.axnna.example/api/signals'), env);
@@ -224,11 +133,8 @@ describe('Stage C Unified Routing, Telemetry, Operations & Missing Features', ()
     const removedOverview = await worker.fetch(new Request('https://staging.axnna.example/api/config/overview?days=7'), env);
     expect(removedOverview.status).toBe(404);
 
-    // Privacy-safe analytics & pairing completion persisted accurately
-    const events = sqlite.prepare(`SELECT event_type, device_category, country_code, referrer FROM analytics_events`).all() as any[];
-    expect(events).toHaveLength(3);
-    expect(events.some((e) => e.event_type === 'PAGE_VIEW' && e.device_category === 'mobile' && e.country_code === 'KE' && e.referrer === 'search.example')).toBe(true);
-    expect(events.some((e) => e.event_type === 'TELEGRAM_CONNECT_COMPLETED')).toBe(true);
+    const events = sqlite.prepare(`SELECT COUNT(*) as c FROM analytics_events`).get() as any;
+    expect(events.c).toBe(0);
   });
 
   it('tracks provider health for market + calendar providers and records scheduled_job_runs on sync', async () => {

@@ -13,7 +13,6 @@
     "test:live": "./node_modules/.bin/esbuild scripts/verify_live_provider.ts --bundle --platform=node --format=esm --outfile=.wrangler/verify_live_provider.mjs && node .wrangler/verify_live_provider.mjs"
   },
   "dependencies": {
-    "framer-motion": "^14.0.0",
     "lucide-react": "^1.52.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
