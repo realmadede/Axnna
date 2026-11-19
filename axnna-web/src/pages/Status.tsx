@@ -97,11 +97,11 @@ export default function Status() {
   const resolvedOverall = data ? resolveDisplayOverallStatus(data) : null;
 
   return (
-    <div style={{ maxWidth: '860px', margin: '0 auto', paddingBottom: '4rem', minHeight: '620px', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+    <div style={{ maxWidth: '820px', margin: '0 auto', paddingBottom: '3rem', minHeight: '520px', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
       <div className="admin-header">
         <div>
-          <h1 style={{ fontSize: 'clamp(1.9rem, 4vw, 2.35rem)', fontWeight: 700, letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <Activity size={26} color="var(--accent-color)" /> System Status
+          <h1 style={{ fontSize: 'clamp(1.65rem, 3.6vw, 2.15rem)', fontWeight: 700, letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            <Activity size={22} color="var(--accent-color)" /> System Status
           </h1>
           <p style={{ color: 'var(--text-muted)', marginTop: '0.35rem' }}>
             Operational availability for Axnna services and monitored instruments.

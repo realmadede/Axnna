@@ -52,15 +52,15 @@ export default function FAQ() {
   const [openIndex, setOpenIndex] = useState<number | null>(0);
 
   return (
-    <div style={{ maxWidth: '820px', margin: '0 auto', paddingBottom: '4rem' }}>
-      <h1 style={{ fontSize: 'clamp(2.1rem, 5vw, 3rem)', fontWeight: 700, letterSpacing: '-0.025em', marginBottom: '0.75rem' }}>
+    <div style={{ maxWidth: '780px', margin: '0 auto', paddingBottom: '3rem' }}>
+      <h1 style={{ fontSize: 'clamp(1.75rem, 3.8vw, 2.35rem)', fontWeight: 700, letterSpacing: '-0.025em', marginBottom: '0.5rem' }}>
         Frequently Asked Questions
       </h1>
-      <p style={{ color: 'var(--text-muted)', fontSize: '1.05rem', marginBottom: '2.5rem' }}>
+      <p style={{ color: 'var(--text-muted)', fontSize: '0.96rem', marginBottom: '1.5rem' }}>
         Methodology boundaries, scoring thresholds, and Telegram setup.
       </p>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
         {FAQS.map((faq, i) => {
           const isOpen = openIndex === i;
           return (

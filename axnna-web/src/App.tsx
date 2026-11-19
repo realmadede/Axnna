@@ -218,13 +218,13 @@ export default function App() {
     <Layout>
       <Routes>
         <Route path="/" element={<Landing />} />
-        <Route path="/strategies" element={<div className="container" style={{ paddingTop: '4rem' }}><Strategies /></div>} />
+        <Route path="/strategies" element={<div className="container" style={{ paddingTop: '2.25rem' }}><Strategies /></div>} />
         <Route path="/methodology" element={<Navigate to="/strategies" replace />} />
-        <Route path="/about" element={<div className="container" style={{ paddingTop: '4rem' }}><About /></div>} />
-        <Route path="/contact" element={<div className="container" style={{ paddingTop: '4rem' }}><Contact /></div>} />
-        <Route path="/faq" element={<div className="container" style={{ paddingTop: '4rem' }}><FAQ /></div>} />
-        <Route path="/status" element={<div className="container" style={{ paddingTop: '4rem' }}><Status /></div>} />
-        <Route path="/legal/:page" element={<div className="container" style={{ paddingTop: '4rem' }}><Legal /></div>} />
+        <Route path="/about" element={<div className="container" style={{ paddingTop: '2.25rem' }}><About /></div>} />
+        <Route path="/contact" element={<div className="container" style={{ paddingTop: '2.25rem' }}><Contact /></div>} />
+        <Route path="/faq" element={<div className="container" style={{ paddingTop: '2.25rem' }}><FAQ /></div>} />
+        <Route path="/status" element={<div className="container" style={{ paddingTop: '2.25rem' }}><Status /></div>} />
+        <Route path="/legal/:page" element={<div className="container" style={{ paddingTop: '2.25rem' }}><Legal /></div>} />
         <Route path="/connect-telegram" element={<ConnectTelegram />} />
       </Routes>
     </Layout>

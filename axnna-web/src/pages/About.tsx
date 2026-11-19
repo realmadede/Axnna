@@ -3,19 +3,19 @@ import { Shield, Activity, Zap } from 'lucide-react';
 
 export default function About() {
   return (
-    <div style={{ maxWidth: '800px', margin: '0 auto', paddingBottom: '4rem' }}>
-      <h1 style={{ fontSize: '3rem', fontWeight: 700, letterSpacing: '-0.02em', marginBottom: '1.5rem' }}>About Axnna</h1>
-      <p style={{ color: 'var(--text-muted)', fontSize: '1.25rem', marginBottom: '4rem', lineHeight: 1.6 }}>
+    <div style={{ maxWidth: '760px', margin: '0 auto', paddingBottom: '3rem' }}>
+      <h1 style={{ fontSize: 'clamp(1.75rem, 3.8vw, 2.35rem)', fontWeight: 700, letterSpacing: '-0.02em', marginBottom: '0.75rem' }}>About Axnna</h1>
+      <p style={{ color: 'var(--text-muted)', fontSize: '1rem', marginBottom: '2rem', lineHeight: 1.6 }}>
         We built Axnna because monitoring charts manually is emotional, exhausting, and prone to error.
       </p>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '4rem' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
         <section>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
-            <Activity color="var(--accent-color)" size={28} />
-            <h2 style={{ fontSize: '1.5rem', fontWeight: 600 }}>The Problem</h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', marginBottom: '0.65rem' }}>
+            <Activity color="var(--accent-color)" size={20} />
+            <h2 style={{ fontSize: '1.15rem', fontWeight: 600 }}>The Problem</h2>
           </div>
-          <p style={{ color: 'var(--text-muted)', lineHeight: 1.8, marginBottom: '1rem' }}>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.94rem', lineHeight: 1.65 }}>
             Most retail traders lose money because they lack consistency. They chase price action, ignore macroeconomic context, and fail to filter out low-probability environments. Traditional "signal groups" offer no transparency into their methodology, operating as black boxes that promote gambling over structured execution.
           </p>
         </section>
