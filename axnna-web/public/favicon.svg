@@ -1,11 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <rect x="2" y="2" width="96" height="96" rx="22" fill="#08090c" stroke="#334155" stroke-width="2"/>
-  <rect x="17" y="51" width="66" height="12" rx="2" fill="#64748b" fill-opacity="0.22"/>
-  <line x1="17" y1="51" x2="83" y2="51" stroke="#94a3b8" stroke-opacity="0.5" stroke-width="1.5"/>
-  <line x1="17" y1="63" x2="83" y2="63" stroke="#94a3b8" stroke-opacity="0.38" stroke-width="1.5"/>
-  <polygon points="50,16 78,81 67,81 50,41 33,81 22,81" fill="#f8fafc"/>
-  <rect x="35" y="54" width="30" height="6.5" rx="1.2" fill="#ffffff"/>
-  <rect x="16" y="78" width="11" height="3" rx="1" fill="#94a3b8"/>
-  <rect x="73" y="78" width="11" height="3" rx="1" fill="#94a3b8"/>
-  <polygon points="50,11 54.5,16 50,14 45.5,16" fill="#cbd5e1"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <defs>
+    <linearGradient id="axnna-fav-bg" x1="10" y1="6" x2="90" y2="94" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#121824"/>
+      <stop offset="100%" stop-color="#080b10"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="96" height="96" rx="22" fill="url(#axnna-fav-bg)" stroke="#263245" stroke-width="2.4"/>
+  <rect x="17" y="53" width="66" height="10" rx="5" fill="#2f81f7" fill-opacity="0.28"/>
+  <rect x="17" y="56.5" width="66" height="3" rx="1.5" fill="#2f81f7"/>
+  <path d="M21 44 L35 72 L73 27" stroke="#f4f7fb" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="73" cy="27" r="11" fill="#2dd47e" fill-opacity="0.24"/>
+  <circle cx="73" cy="27" r="6.2" fill="#2dd47e"/>
 </svg>
