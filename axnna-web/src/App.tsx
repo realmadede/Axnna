@@ -25,21 +25,8 @@ function CookieBanner() {
   if (!visible) return null;
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        bottom: '1.5rem',
-        right: '1.5rem',
-        maxWidth: '340px',
-        backgroundColor: 'var(--surface-elevated)',
-        border: '1px solid var(--border-strong)',
-        borderRadius: '12px',
-        padding: '1.25rem',
-        zIndex: 100,
-        boxShadow: '0 12px 32px rgba(0, 0, 0, 0.28)',
-      }}
-    >
-      <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '1rem', lineHeight: 1.5 }}>
+    <div className="cookie-banner">
+      <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '0.85rem', lineHeight: 1.5 }}>
         We use essential cookies for secure sessions and theme preference. See our{' '}
         <Link to="/legal/cookies" style={{ textDecoration: 'underline', color: 'var(--text-color)' }}>
           Cookie Policy

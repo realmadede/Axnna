@@ -4,7 +4,7 @@ import { Activity, Bell, ChevronLeft, MessageSquare, ShieldCheck, Target } from 
 
 export function HeroMarketIntelligence() {
   return (
-    <div className="glass-card" style={{ width: '100%', maxWidth: '340px', padding: '1.15rem', display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
+    <div className="glass-card" style={{ width: '100%', maxWidth: '300px', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.65rem', marginBottom: '0.15rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <Activity size={16} color="var(--accent-color)" />
@@ -32,7 +32,7 @@ export function HeroMarketIntelligence() {
 
 export function HeroSignalAnalysis() {
   return (
-    <div className="glass-card" style={{ width: '100%', maxWidth: '340px', padding: '1.15rem', display: 'flex', flexDirection: 'column', gap: '0.55rem' }}>
+    <div className="glass-card" style={{ width: '100%', maxWidth: '300px', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.65rem', marginBottom: '0.15rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <Target size={16} color="var(--accent-color)" />
@@ -57,7 +57,7 @@ export function HeroSignalAnalysis() {
 
 export function HeroTelegramMock() {
   return (
-    <div style={{ width: '100%', maxWidth: '305px', backgroundColor: '#0f0f0f', border: '2px solid var(--border-strong)', borderRadius: '20px', height: '278px', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 12px 30px rgba(0,0,0,0.25)' }}>
+    <div style={{ width: '100%', maxWidth: '285px', backgroundColor: '#0f0f0f', border: '2px solid var(--border-strong)', borderRadius: '20px', height: '272px', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 12px 30px rgba(0,0,0,0.25)' }}>
       <div style={{ backgroundColor: '#1d222b', padding: '0.65rem 0.9rem', display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
         <ChevronLeft size={18} color="#5288c1" />
         <div style={{ width: 28, height: 28, borderRadius: '50%', backgroundColor: 'var(--accent-color)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -113,9 +113,9 @@ export function DynamicHero() {
   ];
 
   return (
-    <section style={{ padding: '2.5rem 0 2.25rem' }}>
-      <div className="container" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))', gap: '2.5rem', alignItems: 'center', width: '100%' }}>
-        <div>
+    <section style={{ padding: '2rem 0 1.75rem' }}>
+      <div className="container hero-grid">
+        <div style={{ minWidth: 0 }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.45rem', padding: '0.3rem 0.65rem', borderRadius: '9999px', border: '1px solid var(--border-color)', backgroundColor: 'var(--card-bg)', marginBottom: '1rem', fontSize: '0.74rem', color: 'var(--text-muted)' }}>
             <ShieldCheck size={14} color="var(--success-color)" />
             <span className="mono">DETERMINISTIC ENGINE • TELEGRAM NATIVE</span>

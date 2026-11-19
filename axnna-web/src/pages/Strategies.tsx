@@ -111,7 +111,7 @@ export default function Strategies() {
 
         {!perfLoading && perf && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.7rem' }}>
+            <div className="perf-kpi-grid">
               <div style={{ padding: '0.75rem', borderRadius: '8px', backgroundColor: 'var(--surface-elevated)', border: '1px solid var(--border-color)' }}>
                 <div className="admin-kpi-label">Closed Trades</div>
                 <div className="mono" style={{ fontSize: '1.25rem', fontWeight: 700, marginTop: '0.2rem' }}>{perf.summary.closedTrades}</div>

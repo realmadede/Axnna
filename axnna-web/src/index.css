@@ -243,19 +243,19 @@ a:hover {
 
 @media (max-width: 768px) {
   .container {
-    padding: 0 1rem;
+    padding: 0 1.25rem;
   }
 }
 
 .hero-title {
-  font-size: clamp(2rem, 4.2vw, 3.1rem);
+  font-size: clamp(1.85rem, 4.2vw, 3.1rem);
   font-weight: 700;
-  line-height: 1.08;
+  line-height: 1.1;
   letter-spacing: -0.03em;
 }
 
 .section-title {
-  font-size: clamp(1.5rem, 3.2vw, 2.15rem);
+  font-size: clamp(1.4rem, 3.2vw, 2.15rem);
   font-weight: 700;
   letter-spacing: -0.025em;
 }
@@ -267,7 +267,7 @@ a:hover {
 }
 
 .section-padding {
-  padding: clamp(2rem, 4vw, 3.25rem) 0;
+  padding: clamp(1.75rem, 4vw, 3.25rem) 0;
 }
 
 .glass-card {
@@ -275,7 +275,16 @@ a:hover {
   border: 1px solid var(--border-color);
   border-radius: 10px;
   padding: 1.15rem 1.25rem;
+  min-width: 0;
   transition: border-color 0.18s ease;
+}
+
+.hero-grid,
+.telegram-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2.25rem;
+  align-items: center;
 }
 
 .setup-diagram-split {
@@ -297,9 +306,71 @@ a:hover {
   gap: 1rem;
 }
 
+.perf-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.cookie-banner {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  max-width: 340px;
+  background-color: var(--surface-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 1.15rem;
+  z-index: 100;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+}
+
 @media (max-width: 800px) {
+  .hero-grid,
+  .telegram-split,
   .setup-diagram-split {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.5rem;
+  }
+  .perf-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .container {
+    padding: 0 1.25rem;
+  }
+  .glass-card {
+    padding: 0.95rem 1rem;
+  }
+  .instrument-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.55rem;
+  }
+  .instrument-cell {
+    padding: 0.55rem 0.65rem;
+  }
+  .how-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.6rem;
+  }
+  .how-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    padding: 0.8rem 0.95rem !important;
+  }
+  .footer {
+    padding: 2rem 1.25rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.5rem;
+  }
+  .cookie-banner {
+    left: 1.25rem;
+    right: 1.25rem;
+    bottom: 1rem;
+    max-width: none;
   }
 }
 

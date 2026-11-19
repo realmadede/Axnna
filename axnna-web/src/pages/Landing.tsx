@@ -137,8 +137,8 @@ function TelegramTabs() {
         <p style={{ color: 'var(--text-muted)', fontSize: '1rem', marginTop: '0.45rem' }}>Your signal terminal delivered without clutter.</p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '2rem', alignItems: 'center' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }} role="tablist" aria-label="Telegram bot features">
+      <div className="telegram-split">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', minWidth: 0 }} role="tablist" aria-label="Telegram bot features">
           {tabKeys.map((key) => {
             const selected = activeTab === key;
             return (
@@ -169,7 +169,7 @@ function TelegramTabs() {
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'center' }}>
-          <div style={{ width: '100%', maxWidth: '310px', backgroundColor: '#0f0f0f', border: '2px solid var(--border-strong)', borderRadius: '20px', height: '272px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ width: '100%', maxWidth: '285px', backgroundColor: '#0f0f0f', border: '2px solid var(--border-strong)', borderRadius: '20px', height: '272px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             <div style={{ backgroundColor: '#1d222b', padding: '0.65rem 0.9rem', display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
               <ChevronLeft size={18} color="#5288c1" />
               <div style={{ width: 28, height: 28, borderRadius: '50%', backgroundColor: 'var(--accent-color)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -222,13 +222,15 @@ export default function Landing() {
             { step: '04', title: 'Deterministic Score', desc: 'Scores setups on strict geometry; discards below 65%.', icon: <BarChart2 size={17} color="var(--accent-color)" /> },
             { step: '05', title: 'Telegram Delivery', desc: 'Pushes Entry, Stop, and Target alerts straight to subscribers.', icon: <Bell size={17} color="var(--accent-color)" /> },
           ].map((item) => (
-            <div key={item.step} className="glass-card" style={{ padding: '1rem 1.05rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
+            <div key={item.step} className="glass-card how-card" style={{ padding: '0.95rem 1.05rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.4rem', marginBottom: '0.45rem', flexShrink: 0 }}>
                 <span className="mono" style={{ color: 'var(--text-muted)', fontSize: '0.74rem', fontWeight: 600 }}>{item.step}</span>
                 {item.icon}
               </div>
-              <h3 style={{ fontSize: '0.96rem', fontWeight: 600, marginBottom: '0.35rem' }}>{item.title}</h3>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.84rem', lineHeight: 1.45 }}>{item.desc}</p>
+              <div style={{ minWidth: 0 }}>
+                <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.25rem' }}>{item.title}</h3>
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.83rem', lineHeight: 1.45 }}>{item.desc}</p>
+              </div>
             </div>
           ))}
         </div>
