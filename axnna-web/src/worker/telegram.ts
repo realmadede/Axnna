@@ -700,6 +700,22 @@ export async function handlePollSession(env: Env, url: URL, headers: Record<stri
     return Response.json({ status: 'DISCONNECTED' }, { headers });
   }
 
+  if (session.status === 'CONNECTED' && session.axnna_user_id) {
+    const reconnectAudit = await env.DB.prepare(`
+      SELECT event_type
+      FROM audit_events
+      WHERE axnna_user_id = ?
+        AND event_type = 'TELEGRAM_RECONNECT_ALREADY_CONNECTED'
+        AND metadata LIKE ?
+      LIMIT 1
+    `)
+      .bind(session.axnna_user_id, `%"sessionId":"${session.id}"%`)
+      .first();
+    if (reconnectAudit) {
+      return Response.json({ status: 'CONNECTED', alreadyConnected: true }, { headers });
+    }
+  }
+
   return Response.json({ status: session.status }, { headers });
 }
 
@@ -961,13 +977,14 @@ async function processTelegramConnection(
   }
 
   await env.DB.prepare(`
-    INSERT INTO audit_events (event_id, event_type, axnna_user_id, actor_source)
-    VALUES (?, ?, ?, 'TELEGRAM_WEBHOOK')
+    INSERT INTO audit_events (event_id, event_type, axnna_user_id, actor_source, metadata)
+    VALUES (?, ?, ?, 'TELEGRAM_WEBHOOK', ?)
   `)
     .bind(
       crypto.randomUUID(),
       wasAlreadyConnected ? 'TELEGRAM_RECONNECT_ALREADY_CONNECTED' : 'TELEGRAM_CONNECTION_COMPLETED',
-      axnnaUserId
+      axnnaUserId,
+      JSON.stringify({ sessionId: session.id, alreadyConnected: wasAlreadyConnected })
     )
     .run();
 

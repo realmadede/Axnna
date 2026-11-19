@@ -9,6 +9,7 @@ interface SessionInitResponse {
 
 interface SessionStatusResponse {
   status?: 'PENDING' | 'CONNECTED' | 'EXPIRED' | 'DISCONNECTED' | 'NOT_FOUND';
+  alreadyConnected?: boolean;
 }
 
 type ConnectionStatus =
@@ -62,6 +63,7 @@ export default function ConnectTelegram() {
           return;
         }
         localStorage.removeItem(SESSION_STORAGE_KEY);
+        window.dispatchEvent(new Event('axnna-tg-changed'));
         createNewSession();
       })
       .catch(() => createNewSession());
@@ -76,7 +78,8 @@ export default function ConnectTelegram() {
         .then((data) => {
           if (data.status === 'CONNECTED') {
             localStorage.setItem(SESSION_STORAGE_KEY, token);
-            setStatus('CONNECTED');
+            window.dispatchEvent(new Event('axnna-tg-changed'));
+            setStatus(data.alreadyConnected ? 'ALREADY_CONNECTED' : 'CONNECTED');
             clearInterval(interval);
           } else if (data.status === 'EXPIRED') {
             setStatus('EXPIRED');
@@ -114,6 +117,7 @@ export default function ConnectTelegram() {
         });
       }
       localStorage.removeItem(SESSION_STORAGE_KEY);
+      window.dispatchEvent(new Event('axnna-tg-changed'));
       setToken(null);
       setStatus('DISCONNECTED');
     } catch {

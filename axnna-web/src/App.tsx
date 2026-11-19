@@ -54,6 +54,19 @@ function Layout({ children }: { children: React.ReactNode }) {
 
   const [isLight, setIsLight] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [hasSavedTg, setHasSavedTg] = useState(() => Boolean(localStorage.getItem('axnna_tg_session_token')));
+
+  useEffect(() => {
+    const syncTgState = () => {
+      setHasSavedTg(Boolean(localStorage.getItem('axnna_tg_session_token')));
+    };
+    window.addEventListener('axnna-tg-changed', syncTgState);
+    window.addEventListener('storage', syncTgState);
+    return () => {
+      window.removeEventListener('axnna-tg-changed', syncTgState);
+      window.removeEventListener('storage', syncTgState);
+    };
+  }, []);
 
   useEffect(() => {
     const saved = localStorage.getItem('axnna_theme');
@@ -128,8 +141,22 @@ function Layout({ children }: { children: React.ReactNode }) {
               {isLight ? <Moon size={18} /> : <Sun size={18} />}
             </button>
             {location.pathname !== '/connect-telegram' && (
-              <Link to="/connect-telegram" className="button-primary header-cta">
-                Connect to Telegram
+              <Link
+                to="/connect-telegram"
+                className={hasSavedTg ? 'button-secondary header-cta' : 'button-primary header-cta'}
+              >
+                {hasSavedTg && (
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      backgroundColor: 'var(--success-color)',
+                      display: 'inline-block',
+                    }}
+                  />
+                )}
+                <span>{hasSavedTg ? 'Telegram Connected' : 'Connect to Telegram'}</span>
               </Link>
             )}
             <button
@@ -147,8 +174,12 @@ function Layout({ children }: { children: React.ReactNode }) {
         {mobileMenuOpen && (
           <nav className="mobile-drawer" aria-label="Mobile Navigation">
             {navItems}
-            <Link to="/connect-telegram" className="button-primary" style={{ marginTop: '0.5rem' }}>
-              Connect to Telegram
+            <Link
+              to="/connect-telegram"
+              className={hasSavedTg ? 'button-secondary' : 'button-primary'}
+              style={{ marginTop: '0.5rem' }}
+            >
+              {hasSavedTg ? 'Telegram Connected' : 'Connect to Telegram'}
             </Link>
           </nav>
         )}

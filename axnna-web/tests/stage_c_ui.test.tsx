@@ -176,4 +176,25 @@ describe('Stage C Interactive UI Tests', () => {
     });
     expect(localStorage.getItem('axnna_tg_session_token')).toBeNull();
   });
+
+  it('ConnectTelegram displays Already Connected when fresh browser poll returns alreadyConnected: true', async () => {
+    vi.useFakeTimers();
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ token: 'tok_new_2' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 'CONNECTED', alreadyConnected: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    render(<ConnectTelegram />);
+    await vi.waitFor(() => {
+      expect(screen.getByText(/Open Telegram App/i)).toBeTruthy();
+    });
+
+    await vi.advanceTimersByTimeAsync(2100);
+    await vi.waitFor(() => {
+      expect(screen.getByText('Already Connected')).toBeTruthy();
+    });
+    expect(localStorage.getItem('axnna_tg_session_token')).toBe('tok_new_2');
+    vi.useRealTimers();
+  });
 });

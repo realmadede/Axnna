@@ -105,6 +105,12 @@ describe('Telegram Pairing, Webhook Security & Delivery Reliability', () => {
     expect(userCount.cnt).toBe(1);
     expect(botMessages.at(-1)).toContain('already connected to Axnna');
 
+    const pollAlready = await worker.fetch(
+      new Request(`https://axnna.example/api/telegram/session/${token2}`),
+      env
+    );
+    expect(await pollAlready.json()).toEqual({ status: 'CONNECTED', alreadyConnected: true });
+
     // 5. Disconnecting via /disconnect disables alerts and updates session poll state to DISCONNECTED
     await worker.fetch(
       new Request('https://axnna.example/api/telegram/webhook', {
